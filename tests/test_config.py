@@ -53,3 +53,11 @@ def test_model_ids_have_no_date_suffix(monkeypatch):
     cfg = _reload(monkeypatch)
     for model in (cfg.AGENT_MODEL, cfg.CHEAP_MODEL):
         assert not model[-8:].isdigit(), model
+
+
+def test_workspace_id_is_optional_and_accepts_alias(monkeypatch):
+    cfg = _reload(monkeypatch, ANTHROPIC_WORKSPACE_ID=None, SVETA_ANTHROPIC_WORKSPACE_ID=None)
+    assert cfg.ANTHROPIC_WORKSPACE_ID == ""
+    cfg.validate_secrets()  # not required: a workspace-scoped key needs no id
+    cfg = _reload(monkeypatch, SVETA_ANTHROPIC_WORKSPACE_ID="wrkspc_123")
+    assert cfg.ANTHROPIC_WORKSPACE_ID == "wrkspc_123"

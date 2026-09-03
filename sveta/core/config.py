@@ -57,6 +57,12 @@ TOKEN_KEY = _env("SVETA_TOKEN_KEY")
 # --- Models ------------------------------------------------------------------
 
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "sveta_anthropic")
+# Only for an *identity-linked* Anthropic key (the kind the Console issues to a
+# person rather than to a workspace): the API then requires the workspace id on
+# every request — first live call, 2026-09-03: "anthropic-workspace-id is required
+# when authenticating with an identity-linked API key". A workspace-scoped key
+# needs nothing here. Both work; the choice is Dimitry's.
+ANTHROPIC_WORKSPACE_ID = _env("ANTHROPIC_WORKSPACE_ID", "SVETA_ANTHROPIC_WORKSPACE_ID")
 OPENAI_API_KEY = _env("OPENAI_API_KEY", "sveta_openai_api")
 
 # IDs without date suffixes (SPEC.md §6.1). effort is sent to the agent model only.

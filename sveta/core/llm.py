@@ -48,7 +48,10 @@ def check_budget(user_id: int) -> None:
 
 def client():
     import anthropic
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    headers = {}
+    if config.ANTHROPIC_WORKSPACE_ID:
+        headers["anthropic-workspace-id"] = config.ANTHROPIC_WORKSPACE_ID
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, default_headers=headers)
 
 
 def usage_of(response) -> dict:

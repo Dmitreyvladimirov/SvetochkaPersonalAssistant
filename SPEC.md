@@ -592,6 +592,9 @@ same runner. The Instagram importer can be pulled into stage 5 without harm.
 - `ANTHROPIC_API_KEY` as a value from console.anthropic.com (not a reference to
   JobScraper), `OPENAI_API_KEY` for Whisper (a separate project; no clash with
   JobScraper's Phase 5)
+- If the Anthropic key is *identity-linked* (issued to a person, not a workspace),
+  also `SVETA_ANTHROPIC_WORKSPACE_ID` — the API demands it on every request. A
+  workspace-scoped key needs nothing extra (found on the first live call, 09-03)
 - Google: enable the Calendar API, re-mint the token with the new scope (a scope
   cannot be added to an existing refresh token). No app publishing needed:
   `sodium-wall-331321` is already In production (`CONTEXT.md`, entry 13)
