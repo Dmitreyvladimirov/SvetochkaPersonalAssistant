@@ -317,6 +317,12 @@ def schema_statements() -> list[str]:
             )""",
         """CREATE INDEX IF NOT EXISTS job_queue_ready_idx ON job_queue (run_after)
             WHERE status = 'pending'""",
+
+        # Stage 1 additions, as ADD COLUMN so an existing database migrates on boot.
+        # reply_text is what Svetochka answered (feeds the short history the agent
+        # sees); suggestions are the FR-43 buttons, kept until one is tapped.
+        "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS reply_text TEXT",
+        "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS suggestions JSONB",
     ]
 
 
@@ -367,5 +373,286 @@ def ping() -> dict:
             with conn.cursor() as cur:
                 cur.execute("SELECT count(*) AS n FROM users")
                 return {"ok": True, "users": int(cur.fetchone()["n"])}
+    finally:
+        conn.close()
+
+
+# --- Users -------------------------------------------------------------------
+
+def get_user_by_chat(chat_id) -> dict | None:
+    """The access check (FR-2): no row, no user, no reply."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, telegram_chat_id, tz, status FROM users "
+                            "WHERE telegram_chat_id = %s AND status = 'active'", (str(chat_id),))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# --- Inbox -------------------------------------------------------------------
+
+def claim_update(update_id: int | None, user_id: int, *, message_id=None, kind="text",
+                 raw_text=None, file_id=None, duration_sec=None) -> int | None:
+    """Record an incoming update and return its inbox_items.id — or None if this
+    update_id was already seen. None is the caller's signal to stop, and it must be
+    checked before anything paid happens (FR-3)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO inbox_items
+                       (user_id, tg_update_id, message_id, kind, raw_text, file_id, duration_sec)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (tg_update_id) DO NOTHING RETURNING id""",
+                    (user_id, update_id, message_id, kind, raw_text, file_id, duration_sec),
+                )
+                row = cur.fetchone()
+                return row["id"] if row else None
+    finally:
+        conn.close()
+
+
+def mark_item(item_id: int, *, status: str, error: str | None = None,
+              reply_text: str | None = None, suggestions: list | None = None) -> None:
+    import json
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE inbox_items
+                       SET status = %s, error = %s, processed_at = NOW(),
+                           reply_text = COALESCE(%s, reply_text),
+                           suggestions = COALESCE(%s::jsonb, suggestions)
+                       WHERE id = %s""",
+                    (status, error, reply_text,
+                     json.dumps(suggestions, ensure_ascii=False) if suggestions is not None else None,
+                     item_id),
+                )
+    finally:
+        conn.close()
+
+
+def get_item(user_id: int, item_id: int) -> dict | None:
+    """Scoped by user on purpose: a callback payload is attacker-controlled text."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, raw_text, reply_text, suggestions FROM inbox_items "
+                            "WHERE id = %s AND user_id = %s", (item_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def recent_exchanges(user_id: int, limit: int = 8) -> list[dict]:
+    """The short conversation history the agent sees: last N (message, reply) pairs,
+    oldest first. Only text items with a reply — voice and failures add noise."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT raw_text, reply_text FROM inbox_items
+                       WHERE user_id = %s AND raw_text IS NOT NULL AND reply_text IS NOT NULL
+                       ORDER BY id DESC LIMIT %s""",
+                    (user_id, limit),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                return list(reversed(rows))
+    finally:
+        conn.close()
+
+
+# --- Notes -------------------------------------------------------------------
+
+def create_note(user_id: int, body: str, *, title: str | None = None,
+                tags: list[str] | None = None, project: str | None = None,
+                source: str = "telegram", source_ref: str | None = None,
+                inbox_item_id: int | None = None) -> int:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO notes
+                       (user_id, inbox_item_id, title, body, tags, project, source, source_ref)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (user_id, source, source_ref) DO UPDATE
+                           SET updated_at = NOW(), deleted_at = NULL
+                       RETURNING id""",
+                    (user_id, inbox_item_id, title, body, tags or [], project, source, source_ref),
+                )
+                return cur.fetchone()["id"]
+    finally:
+        conn.close()
+
+
+def search_notes(user_id: int, query: str, *, limit: int = 5,
+                 source: str | None = None) -> list[dict]:
+    """Russian full-text over title+body. plainto_tsquery, not to_tsquery: the input
+    is a phrase typed on a phone, and to_tsquery raises on its punctuation."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT id, title, body, project, source, source_ref, created_at,
+                               ts_rank(to_tsvector('russian', coalesce(title,'') || ' ' || body),
+                                       plainto_tsquery('russian', %s)) AS rank
+                        FROM notes
+                        WHERE user_id = %s AND deleted_at IS NULL
+                          {"AND source = %s" if source else ""}
+                          AND to_tsvector('russian', coalesce(title,'') || ' ' || body)
+                              @@ plainto_tsquery('russian', %s)
+                        ORDER BY rank DESC, created_at DESC
+                        LIMIT %s""",
+                    (query, user_id, *([source] if source else []), query, limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def recent_notes(user_id: int, *, limit: int = 10, project: str | None = None) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT id, title, body, project, source, created_at FROM notes
+                        WHERE user_id = %s AND deleted_at IS NULL
+                          {"AND project = %s" if project else ""}
+                        ORDER BY created_at DESC LIMIT %s""",
+                    (user_id, *([project] if project else []), limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def soft_delete_note(user_id: int, note_id: int) -> bool:
+    """What the "Не туда" button does. Soft, because the text is rarely the mistake —
+    the filing is — and it should survive being filed wrongly."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE notes SET deleted_at = NOW() "
+                            "WHERE id = %s AND user_id = %s AND deleted_at IS NULL",
+                            (note_id, user_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+# --- Preferences and corrections ---------------------------------------------
+
+def set_preference(user_id: int, key: str, value: str, *, set_via: str = "chat") -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO preferences (user_id, key, value, set_via)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (user_id, key) DO UPDATE
+                           SET value = EXCLUDED.value, set_via = EXCLUDED.set_via, updated_at = NOW()""",
+                    (user_id, key, value, set_via),
+                )
+    finally:
+        conn.close()
+
+
+def delete_preference(user_id: int, key: str) -> bool:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM preferences WHERE user_id = %s AND key = %s", (user_id, key))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def list_preferences(user_id: int) -> dict[str, str]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM preferences WHERE user_id = %s ORDER BY key",
+                            (user_id,))
+                return {r["key"]: r["value"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def add_correction(user_id: int, inbox_item_id: int | None, did: str,
+                   should_have: str | None = None) -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO corrections (user_id, inbox_item_id, did, should_have) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (user_id, inbox_item_id, did, should_have),
+                )
+    finally:
+        conn.close()
+
+
+def recent_corrections(user_id: int, limit: int = 5) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT did, should_have, created_at FROM corrections "
+                            "WHERE user_id = %s ORDER BY id DESC LIMIT %s", (user_id, limit))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# --- Cost accounting ---------------------------------------------------------
+
+def record_llm_call(user_id: int, inbox_item_id: int | None, purpose: str, model: str,
+                    usage: dict, cost_usd: float, latency_ms: int) -> None:
+    """Never raises: accounting must not be able to break what it accounts for."""
+    try:
+        conn = _conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO llm_call
+                           (user_id, inbox_item_id, purpose, model, input_tokens, output_tokens,
+                            cost_usd, latency_ms)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (user_id, inbox_item_id, purpose, model, usage.get("input_tokens"),
+                         usage.get("output_tokens"), cost_usd, latency_ms),
+                    )
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("db: failed to record llm_call (%s)", purpose)
+
+
+def spend_today(user_id: int) -> float:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM llm_call "
+                            "WHERE user_id = %s AND created_at >= date_trunc('day', NOW())",
+                            (user_id,))
+                return float(cur.fetchone()["total"])
     finally:
         conn.close()
