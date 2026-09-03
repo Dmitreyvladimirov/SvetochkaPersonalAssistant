@@ -10,7 +10,7 @@ through tools, playbooks and memory rather than by rewriting the core.
 - `RESEARCH.md` — the research and reasoning the spec grew out of.
 - `CLAUDE.md` — working notes for Claude Code sessions.
 
-Status: spec accepted 2026-09-03; stage 0 (skeleton) not started.
+Status: spec accepted 2026-09-03; stage 0 (skeleton, schema, `/health`) done.
 
 Own Railway project `svetochka` with its own Postgres. Nothing is shared with any
 other project.

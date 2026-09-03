@@ -39,4 +39,11 @@ Working notes for Claude Code sessions on Svetochka.
 
 ## Current state
 
-- Spec accepted (v0.6). No code yet. Next: stage 0 — skeleton, schema, `/health`.
+- Spec v0.6. Stage 0 done 2026-09-03: `run.sh`/`railway.toml`, `sveta/core/config.py`
+  (validate_secrets, alias names accepted), `sveta/core/db.py` (20-table schema as a
+  pure function, idempotent `init_db`, `seed_users`), `sveta/core/app.py` (`/health`
+  with a DB ping, 503 when the database is down). 21 tests.
+- Next: stage 1 — webhook, inbox, agent loop with `UserScope`, note/search tools,
+  `suggest`, preferences. Not started without an explicit go.
+- Local run: `pip install -r requirements.txt && pytest`; the app needs the
+  variables of `SPEC.md` §12 (a `.env` in the repo root is read, never committed).
