@@ -39,11 +39,15 @@ Working notes for Claude Code sessions on Svetochka.
 
 ## Current state
 
-- Spec v0.6. Stage 0 done 2026-09-03: `run.sh`/`railway.toml`, `sveta/core/config.py`
-  (validate_secrets, alias names accepted), `sveta/core/db.py` (20-table schema as a
-  pure function, idempotent `init_db`, `seed_users`), `sveta/core/app.py` (`/health`
-  with a DB ping, 503 when the database is down). 21 tests.
-- Next: stage 1 — webhook, inbox, agent loop with `UserScope`, note/search tools,
-  `suggest`, preferences. Not started without an explicit go.
-- Local run: `pip install -r requirements.txt && pytest`; the app needs the
-  variables of `SPEC.md` §12 (a `.env` in the repo root is read, never committed).
+- Spec v0.6. Stage 0 live 2026-09-03: skeleton, 20-table schema, `/health`, first
+  user seeded from `SVETA_ALLOWED_CHAT_IDS`.
+- Stage 1 pushed 2026-09-03: webhook, inbox, agent loop (`sveta/core/agent.py`) over
+  the closed tool set in `sveta/tools/`, notes + search, preferences, `suggest`
+  buttons, "Не туда" undo. Voice, reminders, lists → stage 2.
+- **Open DoD item for stage 1:** the golden set (`SVETA_GOLDEN=1 pytest -m golden`)
+  has not been run against the real model — the authoring session had no Anthropic
+  credential. Run it before touching `playbooks/persona.md` or any tool description.
+- The Telegram webhook registers itself on startup from `RAILWAY_PUBLIC_DOMAIN` +
+  `SVETA_WEBHOOK_SECRET` (`app._register_webhook`); nobody pastes the bot token.
+- Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
+  exactly where the SQL does, `tests/fakellm.py` scripts the model.
