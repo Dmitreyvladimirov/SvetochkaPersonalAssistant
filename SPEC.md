@@ -370,9 +370,11 @@ Test: "будь короче" → `brevity` +1, the next reply to the same reque
 
 ### 6.5. Webhook
 
-`POST /tg/{secret}` — three independent layers: the secret in the path, the secret
-in the `X-Telegram-Bot-Api-Secret-Token` header, the chat_id allowlist. An unset
-secret → **503, not 200**. 200 is returned before any work starts — Telegram
+`POST /tg/webhook` — a fixed path and two independent layers: the secret in the
+`X-Telegram-Bot-Api-Secret-Token` header, and the `users` table. **The secret is never
+part of the URL** (revised 2026-09-03: the path-secret design inherited from
+JobScraper printed the secret into every access log, Railway's HTTP log included —
+a violation of §8). An unset secret → **503, not 200**. 200 is returned before any work starts — Telegram
 redelivers anything not acknowledged. `GET /health` → 200 + commit hash.
 
 ---

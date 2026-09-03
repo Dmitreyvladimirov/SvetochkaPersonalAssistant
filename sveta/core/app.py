@@ -27,9 +27,9 @@ def _register_webhook() -> None:
     if not domain or not config.WEBHOOK_SECRET:
         logger.warning("webhook: RAILWAY_PUBLIC_DOMAIN or secret missing — not registering")
         return
-    url = f"https://{domain}/tg/{config.WEBHOOK_SECRET}"
+    url = f"https://{domain}{WEBHOOK_PATH}"
     if telegram.set_webhook(url, config.WEBHOOK_SECRET):
-        logger.info("webhook: registered at https://%s/tg/<secret>", domain)
+        logger.info("webhook: registered at %s", url)
     else:
         logger.error("webhook: setWebhook failed — see telegram errors above")
 
@@ -47,6 +47,12 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="Svetochka", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
+# A fixed path, on purpose. The first design (copied from JobScraper) carried the
+# secret in the path as a second layer — and every access log, Railway's HTTP log
+# included, printed it on every request (found 2026-09-03). The header is the
+# layer Telegram designed for exactly this, and headers never reach access logs.
+WEBHOOK_PATH = "/tg/webhook"
+
 
 @app.get("/health")
 def health():
@@ -62,18 +68,17 @@ def health():
     return {"ok": True, "commit": commit, "db": database}
 
 
-@app.post("/tg/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    """Three independent layers (SPEC.md §6.5): the secret in the path, the secret
-    Telegram echoes in X-Telegram-Bot-Api-Secret-Token, and the users table inside
-    bot._scope_for(). An unset secret answers 503 rather than falling open — this is
-    the one route reachable without a login. 200 is returned before any work starts:
-    Telegram redelivers anything not acknowledged within seconds."""
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
+    """Two independent layers (SPEC.md §6.5): the secret Telegram echoes in
+    X-Telegram-Bot-Api-Secret-Token, and the users table inside bot._scope_for().
+    An unset secret answers 503 rather than falling open — this is the one route
+    reachable without a login. 200 is returned before any work starts: Telegram
+    redelivers anything not acknowledged within seconds."""
     if not config.WEBHOOK_SECRET:
         raise HTTPException(status_code=503, detail="SVETA_WEBHOOK_SECRET not set")
     header = request.headers.get("x-telegram-bot-api-secret-token", "")
-    if not (hmac.compare_digest(secret, config.WEBHOOK_SECRET)
-            and hmac.compare_digest(header, config.WEBHOOK_SECRET)):
+    if not hmac.compare_digest(header, config.WEBHOOK_SECRET):
         raise HTTPException(status_code=403, detail="Bad webhook secret")
     try:
         update = await request.json()

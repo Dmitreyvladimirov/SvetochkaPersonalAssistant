@@ -364,7 +364,7 @@ required variable fails startup with a clear message.
 *DoD:* running `init_db()` twice neither fails nor changes data; idempotency test.
 
 **T-03. Webhook + allowlist + idempotency (6 h).** *Depends on T-01, T-02.*
-Port `POST /tg/{secret}` (both secret checks, 503 when unset), port
+Port `POST /tg/webhook` (both secret checks, 503 when unset), port
 `tg_bot.start()`/`handle_update()`, extend `_allowed()` to a list. Every update goes
 into `inbox_items` with `tg_update_id UNIQUE`; a repeat → log and early exit
 **before** any LLM call.
