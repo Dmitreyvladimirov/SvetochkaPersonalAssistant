@@ -21,6 +21,9 @@ Working notes for Claude Code sessions on Svetochka.
   before any processing. Reply to every incoming item, including on failure.
 - A foreign chat_id gets silence, not a refusal.
 - Secrets live only in the Railway environment; never in the repo, never in chat.
+- Multi-user by construction from stage 0: every personal table has `user_id`,
+  every tool takes a `UserScope` and never a raw chat_id (`SPEC.md` §6.1, §7.3,
+  NFR-10). v1 registers one user; a second is an INSERT, not a schema change.
 - No shared infrastructure with JobScraper: own Railway project, own Postgres, no
   variable references across projects. Patterns are copied, not imported.
 
@@ -36,4 +39,4 @@ Working notes for Claude Code sessions on Svetochka.
 
 ## Current state
 
-- Spec accepted (v0.5). No code yet. Next: stage 0 — skeleton, schema, `/health`.
+- Spec accepted (v0.6). No code yet. Next: stage 0 — skeleton, schema, `/health`.
