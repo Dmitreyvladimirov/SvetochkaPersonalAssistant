@@ -13,5 +13,9 @@ through tools, playbooks and memory rather than by rewriting the core.
 Status: stages 0–1 deployed (2026-09-03) — notes, search, preferences,
 suggestion buttons. Next: stage 2 — voice, reminders, lists.
 
+Development: see `CLAUDE.md` → Local development. Everything a new session needs
+(Railway ids, variable names, open operational items) is in that file; nothing
+lives only in a chat.
+
 Own Railway project `svetochka` with its own Postgres. Nothing is shared with any
 other project.
