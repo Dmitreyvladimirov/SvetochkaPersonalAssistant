@@ -49,9 +49,10 @@ def test_startup_validates_before_touching_the_database(monkeypatch):
 # --- Stage 3: the Google OAuth callback ----------------------------------------
 
 def test_oauth_callback_rejects_a_bad_state(monkeypatch):
-    from sveta.core import google
+    from tests.fakedb import install
+    install(monkeypatch)
     with _client(monkeypatch, lambda: {"ok": True, "users": 1}) as client:
-        r = client.get("/oauth/google/callback", params={"state": "1.deadbeef", "code": "x"})
+        r = client.get("/oauth/google/callback", params={"state": "1.deadbeef.cafe", "code": "x"})
     assert r.status_code == 400
 
 
@@ -64,8 +65,11 @@ def test_oauth_callback_exchanges_and_tells_the_chat(monkeypatch):
     monkeypatch.setattr(telegram, "send_message", lambda text, chat_id, reply_markup=None: sent.append((str(chat_id), text)) or 1)
     monkeypatch.setattr(google, "exchange_code", lambda user_id, code: "dima@example.com")
     with _client(monkeypatch, lambda: {"ok": True, "users": 1}) as client:
-        r = client.get("/oauth/google/callback", params={"state": google.state_for(1), "code": "c0de"})
+        state = google.state_for(1)
+        r = client.get("/oauth/google/callback", params={"state": state, "code": "c0de"})
         assert r.status_code == 200 and "Готово" in r.text
+        r_replay = client.get("/oauth/google/callback", params={"state": state, "code": "c0de"})
+        assert r_replay.status_code == 400                       # a state is single-use
         r2 = client.get("/oauth/google/callback", params={"state": google.state_for(1), "error": "access_denied"})
         assert r2.status_code == 200
     assert sent[0] == ("111", "Google подключён: dima@example.com. Календарь и почта теперь доступны — "

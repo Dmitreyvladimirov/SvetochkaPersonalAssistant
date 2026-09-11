@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from sveta.core import config, crypto, db
+from sveta.core import config, crypto, db, oauth_state
 
 logger = logging.getLogger(__name__)
 
@@ -71,19 +71,15 @@ def redirect_uri() -> str:
 
 
 def state_for(user_id: int) -> str:
-    """`state` binds the callback to the user who asked: an HMAC over the user id
-    with the token key, so a stray or forged callback cannot attach an account
-    to someone else."""
-    mac = hmac.new(config.TOKEN_KEY.encode(), f"google:{user_id}".encode(), hashlib.sha256).hexdigest()[:32]
-    return f"{user_id}.{mac}"
+    """`state` binds the callback to the user who asked AND to one consent link:
+    an HMAC over user id + a fresh nonce; the nonce is stored with a 10-minute
+    expiry and consumed on first use, so a link left in the chat is not a
+    permanent capability (review I4)."""
+    return oauth_state.issue("google", user_id)
 
 
 def user_from_state(state: str) -> int | None:
-    user_part, _, mac = (state or "").partition(".")
-    if not user_part.isdigit():
-        return None
-    expected = state_for(int(user_part)).partition(".")[2]
-    return int(user_part) if hmac.compare_digest(mac, expected) else None
+    return oauth_state.consume("google", state)
 
 
 def auth_url(user_id: int) -> str:
@@ -266,6 +262,11 @@ def range_for(phrase: str, now: datetime, tz: str) -> tuple[datetime, datetime] 
         return start, start + timedelta(days=7)
     if "месяц" in text:
         return day0, day0 + timedelta(days=31)
+    m = timeparse._WEEKDAY.search(" " + text)
+    if m:   # "в четверг" on a Thursday is today for a calendar range, not next week
+        ahead = (timeparse.WEEKDAYS[m.group(1)] - day0.weekday()) % 7
+        start = day0 + timedelta(days=ahead)
+        return start, start + timedelta(days=1)
     parsed = timeparse.parse(text, now=now, tz=tz)
     if parsed is None:
         return None

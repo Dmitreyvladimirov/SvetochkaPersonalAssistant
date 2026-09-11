@@ -463,6 +463,25 @@ class FakeDB:
                        if r["user_id"] == user_id and r.get("received_at") and r["received_at"] >= since],
                       key=lambda r: r["received_at"], reverse=True)[:50]
 
+    def claim_pending(self, user_id, item_id, pid):
+        import threading
+        with getattr(self, "_lock", threading.Lock()):
+            row = self.inbox.get(item_id)
+            if not row or row["user_id"] != user_id:
+                return False
+            for e in row.get("suggestions") or []:
+                if e.get("pid") == pid and not e.get("done"):
+                    e["done"] = True
+                    return True
+            return False
+
+    def release_pending(self, user_id, item_id, pid):
+        row = self.inbox.get(item_id)
+        if row and row["user_id"] == user_id:
+            for e in row.get("suggestions") or []:
+                if e.get("pid") == pid:
+                    e.pop("done", None)
+
     def set_note_notion_page(self, user_id, note_id, page_id):
         r = self.notes.get(note_id)
         if r and r["user_id"] == user_id:

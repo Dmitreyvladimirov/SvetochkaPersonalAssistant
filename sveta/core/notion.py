@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from urllib.parse import urlencode
 
-from sveta.core import config, crypto, db
+from sveta.core import config, crypto, db, oauth_state
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +77,11 @@ def redirect_uri() -> str:
 
 
 def state_for(user_id: int) -> str:
-    mac = hmac.new(config.TOKEN_KEY.encode(), f"notion:{user_id}".encode(), hashlib.sha256).hexdigest()[:32]
-    return f"{user_id}.{mac}"
+    return oauth_state.issue("notion", user_id)
 
 
 def user_from_state(state: str) -> int | None:
-    user_part, _, mac = (state or "").partition(".")
-    if not user_part.isdigit():
-        return None
-    expected = state_for(int(user_part)).partition(".")[2]
-    return int(user_part) if hmac.compare_digest(mac, expected) else None
+    return oauth_state.consume("notion", state)
 
 
 def auth_url(user_id: int) -> str:

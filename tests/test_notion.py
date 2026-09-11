@@ -34,7 +34,7 @@ def test_notion_command_oauth_flow_and_database_pick(monkeypatch):
     monkeypatch.setattr(config, "PUBLIC_DOMAIN", "sveta.example")
     bot.handle_update(msg("/notion", update_id=2))
     link = sent.messages[-1][1]
-    assert "api.notion.com/v1/oauth/authorize" in link and "state=" + notion.state_for(1) in link
+    assert "api.notion.com/v1/oauth/authorize" in link and "state=1." in link
     assert "redirect_uri=https%3A%2F%2Fsveta.example%2Foauth%2Fnotion%2Fcallback" in link
 
     # The consent lands a token; then /notion <link> checks the database with that token.

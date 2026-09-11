@@ -6,7 +6,9 @@ set -e
 # services (stage 4) that run one pass and exit.
 case "${SERVICE_TYPE:-web}" in
   web)
-    exec uvicorn sveta.core.app:app --host 0.0.0.0 --port "${PORT:-8000}"
+    # --no-access-log: the OAuth callbacks carry the authorisation code in the
+    # query string, and §8 says secrets are never logged. The app logs what matters.
+    exec uvicorn sveta.core.app:app --host 0.0.0.0 --port "${PORT:-8000}" --no-access-log
     ;;
   digest)
     exec python -m sveta.jobs.digest

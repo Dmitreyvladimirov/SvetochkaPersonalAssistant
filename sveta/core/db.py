@@ -1428,6 +1428,44 @@ def recent_trip_mail(user_id: int, since) -> list[dict]:
         conn.close()
 
 
+def claim_pending(user_id: int, item_id: int, pid: str) -> bool:
+    """Atomically mark one confirmation entry (by its pid) as done. Two taps on
+    two threads both pass claim_update (different update ids); only the one
+    that flips done here may run the tool (§6.2, review C1)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE inbox_items SET suggestions = (
+                           SELECT jsonb_agg(CASE WHEN e->>'pid' = %s THEN e || '{"done": true}'::jsonb ELSE e END)
+                           FROM jsonb_array_elements(suggestions) e)
+                       WHERE id = %s AND user_id = %s
+                         AND EXISTS (SELECT 1 FROM jsonb_array_elements(suggestions) e
+                                     WHERE e->>'pid' = %s AND NOT COALESCE((e->>'done')::boolean, false))
+                       RETURNING id""",
+                    (pid, item_id, user_id, pid))
+                return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def release_pending(user_id: int, item_id: int, pid: str) -> None:
+    """The tool failed after the claim: let the button be tapped again."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE inbox_items SET suggestions = (
+                           SELECT jsonb_agg(CASE WHEN e->>'pid' = %s THEN e - 'done' ELSE e END)
+                           FROM jsonb_array_elements(suggestions) e)
+                       WHERE id = %s AND user_id = %s""",
+                    (pid, item_id, user_id))
+    finally:
+        conn.close()
+
+
 def set_note_notion_page(user_id: int, note_id: int, page_id: str) -> None:
     conn = _conn()
     try:

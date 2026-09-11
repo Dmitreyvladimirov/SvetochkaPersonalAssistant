@@ -83,19 +83,29 @@ def _local_now(scope: UserScope) -> datetime:
 
 
 def describe(scope: UserScope, args: dict) -> str:
+    """Resolves the phrase ONCE and pins the moment into args (start_iso/end_iso):
+    the card and the tap must agree even if the tap comes an hour later or
+    tomorrow (review C2)."""
     plan = _plan(scope, args)
     if isinstance(plan, str):
         return plan
     title, start, end = plan
+    args["start_iso"], args["end_iso"], args["title"] = start.isoformat(), end.isoformat(), title
     return f"Создать событие: {title} — {timeparse.fmt(start, _local_now(scope))}–{end:%H:%M}"
 
 
 def execute(scope: UserScope, args: dict) -> str:
-    """Runs from the tap only. The reply for the chat."""
-    plan = _plan(scope, args)
-    if isinstance(plan, str):
-        return plan.replace("Error: ", "Не получилось: ")
-    title, start, end = plan
+    """Runs from the tap only. The reply for the chat. Uses the moment pinned by
+    describe(); the phrase is never re-parsed."""
+    if args.get("start_iso") and args.get("end_iso"):
+        title = str(args.get("title") or "").strip() or "(без названия)"
+        start = datetime.fromisoformat(args["start_iso"])
+        end = datetime.fromisoformat(args["end_iso"])
+    else:
+        plan = _plan(scope, args)
+        if isinstance(plan, str):
+            return plan.replace("Error: ", "Не получилось: ")
+        title, start, end = plan
     try:
         created = google.create_event(scope.user_id, title, start, end,
                                       description=str(args.get("description") or ""))

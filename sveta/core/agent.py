@@ -144,7 +144,9 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
                 if label.startswith("Error"):
                     results.append(_tool_result(tu.id, label, True))
                     continue
-                ctx.pending.append({"kind": "confirm", "tool": tu.name, "args": args, "label": label})
+                import uuid
+                ctx.pending.append({"kind": "confirm", "pid": uuid.uuid4().hex[:12], "tool": tu.name,
+                                    "args": args, "label": label})
                 results.append(_tool_result(
                     tu.id, f"Proposed, waiting for the user's tap: {label}. A confirm button will appear "
                            "under your reply. Do NOT say it is done; say what will happen when they tap."))

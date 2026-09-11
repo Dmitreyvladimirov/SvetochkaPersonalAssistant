@@ -31,9 +31,11 @@ def test_loop_records_the_call_and_does_not_run_it(monkeypatch):
     scope = UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem")
     result = agent.run(scope, "поставь встречу с Костей в четверг в 15", client=client)
     assert inserted == []
-    assert result.ctx.pending == [{"kind": "confirm", "tool": "calendar_create",
-                                   "args": {"title": "Встреча с Костей", "when": "в четверг в 15", "duration_min": 60, "description": ""},
-                                   "label": "Создать событие: Встреча с Костей — сегодня в 15:00–16:00"}]
+    (entry,) = result.ctx.pending
+    assert entry["kind"] == "confirm" and entry["tool"] == "calendar_create" and len(entry["pid"]) == 12
+    assert entry["label"] == "Создать событие: Встреча с Костей — сегодня в 15:00–16:00"
+    assert entry["args"]["when"] == "в четверг в 15"
+    assert entry["args"]["start_iso"].startswith("2026-09-10T15:00:00")   # pinned once, in describe
     tool_result = client.messages.requests[1]["messages"][-1]["content"][0]["content"]
     assert tool_result.startswith("Proposed, waiting for the user's tap")
 
@@ -93,3 +95,69 @@ def test_not_connected_is_said_plainly(monkeypatch):
     out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
               ToolContext(), {"period": "завтра", "query": ""})
     assert out.startswith("Error: Google не подключён — /google")
+
+
+def test_tap_uses_the_pinned_moment_not_a_reparse(monkeypatch):
+    """Review C2: proposed on Thursday 14:00 as 'в четверг в 15', tapped at 15:01 —
+    the event still lands today at 15:00, not next Thursday."""
+    fake, sent, client = wire(monkeypatch, [
+        [("calendar_create", {"title": "Созвон", "when": "в четверг в 15", "duration_min": 60, "description": ""})], "ок"])
+    connect(fake, monkeypatch)
+    monkeypatch.setattr(calendar_tool, "_now", lambda: datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc))   # 14:00 local
+    inserted = []
+    monkeypatch.setattr(google, "create_event", lambda uid, title, start, end, description="": inserted.append(start) or {"id": "e"})
+    bot.handle_update(msg("поставь созвон в четверг в 15", update_id=1))
+    item_id = list(fake.inbox)[0]
+    monkeypatch.setattr(calendar_tool, "_now", lambda: datetime(2026, 9, 10, 12, 1, tzinfo=timezone.utc))   # 15:01 local
+    bot.handle_update({"update_id": 2, "callback_query": {"id": "cb", "data": f"cf:{item_id}:0",
+                       "message": {"message_id": 1, "chat": {"id": 111}}}})
+    assert inserted[0].isoformat().startswith("2026-09-10T15:00:00")
+
+
+def test_failed_tap_answers_and_stays_tappable(monkeypatch):
+    fake, sent, client = wire(monkeypatch, [
+        [("calendar_create", {"title": "x", "when": "завтра в 10", "duration_min": 60, "description": ""})], "ок"])
+    connect(fake, monkeypatch)
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("network")
+        return {"id": "e", "link": ""}
+    monkeypatch.setattr(google, "create_event", flaky)
+    bot.handle_update(msg("поставь x завтра в 10", update_id=1))
+    item_id = list(fake.inbox)[0]
+    tap = lambda uid: bot.handle_update({"update_id": uid, "callback_query": {"id": "cb", "data": f"cf:{item_id}:0",
+                                         "message": {"message_id": 1, "chat": {"id": 111}}}})
+    tap(2)
+    assert "Не получилось выполнить" in sent.messages[-1][1]
+    tap(3)
+    assert sent.messages[-1][1].startswith("Создала событие") and len(calls) == 2
+    tap(4)
+    assert sent.messages[-1][1] == "Это уже сделано."
+
+
+def test_two_concurrent_taps_run_the_tool_once(monkeypatch):
+    import threading
+    fake, sent, client = wire(monkeypatch, [
+        [("calendar_create", {"title": "x", "when": "завтра в 10", "duration_min": 60, "description": ""})], "ок"])
+    connect(fake, monkeypatch)
+    inserted = []
+    gate = threading.Barrier(2)
+
+    def slow(*a, **k):
+        inserted.append(1)
+        return {"id": "e", "link": ""}
+    monkeypatch.setattr(google, "create_event", slow)
+    bot.handle_update(msg("поставь x завтра в 10", update_id=1))
+    item_id = list(fake.inbox)[0]
+
+    def tap(uid):
+        gate.wait()
+        bot.handle_update({"update_id": uid, "callback_query": {"id": "cb", "data": f"cf:{item_id}:0",
+                           "message": {"message_id": 1, "chat": {"id": 111}}}})
+    threads = [threading.Thread(target=tap, args=(uid,)) for uid in (2, 3)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert len(inserted) == 1

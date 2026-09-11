@@ -21,14 +21,26 @@ def setup(monkeypatch):
     return fake
 
 
-def test_state_binds_the_user(monkeypatch):
+def test_state_is_bound_to_the_user_single_use_and_short_lived(monkeypatch):
+    import time
+    from sveta.core import oauth_state
     setup(monkeypatch)
     state = google.state_for(1)
-    assert google.user_from_state(state) == 1
-    assert google.user_from_state("2." + state.split(".")[1]) is None   # another user's id, my mac
+    uid, nonce, mac = state.split(".")
+    assert google.user_from_state(f"2.{nonce}.{mac}") is None      # another user's id, my mac
     assert google.user_from_state("garbage") is None and google.user_from_state("") is None
-    assert "state=" + state in google.auth_url(1) and "access_type=offline" in google.auth_url(1)
-    assert "redirect_uri=https%3A%2F%2Fsveta.example%2Foauth%2Fgoogle%2Fcallback" in google.auth_url(1)
+    assert google.user_from_state(state) == 1
+    assert google.user_from_state(state) is None                    # consumed: a replay fails
+    state = google.state_for(1)
+    monkeypatch.setattr(time, "time", lambda: time.time.__wrapped__() + 601 if hasattr(time.time, "__wrapped__") else 4102444800)
+    assert google.user_from_state(state) is None                    # expired after 10 minutes
+    monkeypatch.undo()
+    setup(monkeypatch)
+    state = google.state_for(1)
+    assert oauth_state.consume("notion", state) is None             # a Google state is not a Notion state
+    url = google.auth_url(1)
+    assert "state=1." in url and "access_type=offline" in url
+    assert "redirect_uri=https%3A%2F%2Fsveta.example%2Foauth%2Fgoogle%2Fcallback" in url
 
 
 def test_exchange_stores_the_refresh_token_encrypted(monkeypatch):
@@ -113,5 +125,6 @@ def test_range_for_phrases():
     assert google.range_for("на этой неделе", now, TZ) == (day(7), day(14))
     assert google.range_for("на следующей неделе", now, TZ) == (day(14), day(21))
     assert google.range_for("в понедельник", now, TZ) == (day(14), day(15))
+    assert google.range_for("в четверг", now, TZ) == (day(10), day(11))      # today, not next week
     assert google.range_for("25 сентября", now, TZ) == (day(25), day(26))
     assert google.range_for("когда-нибудь", now, TZ) is None
