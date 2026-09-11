@@ -75,3 +75,7 @@
 {"message": "что мне писал Костя?", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
 {"message": "когда я был у врача?", "expect_tools": ["calendar_query"], "expect_reply": ["врача"], "forbid_tools": ["note_search"]}
 {"message": "когда у меня встреча с Артёмом?", "expect_tools": ["calendar_query"], "expect_reply": ["Артём"]}
+{"message": "что я писал про онбординг для новых пользователей?", "expect_tools": ["note_search"], "expect_reply": ["шаблон"], "forbid_reply": ["другими словами", "попробуй"]}
+{"message": "кто у нас отвечает за бэкапы?", "expect_tools_any": ["fact_recall", "note_search"], "expect_reply": ["Кост"]}
+{"message": "что в покупках?", "expect_tools": ["list_show"], "expect_reply": ["батарейки"], "forbid_tools": ["list_add"]}
+{"message": "что у меня то ли на этой, то ли на следующей неделе?", "expect_tools": ["calendar_query"], "forbid_reply": ["не поняла", "уточни"]}

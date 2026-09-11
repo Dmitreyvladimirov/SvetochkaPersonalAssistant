@@ -66,6 +66,14 @@ def test_the_golden_world_answers_the_tools(monkeypatch):
     # Behind, and spelled the other way: the ladder has to climb to reach it.
     past = run(REGISTRY, "calendar_query", scope, ToolContext(), {"period": "", "query": "приём"})
     assert "Приём у врача" in past
+    # The user's own data, worded so the strict pass misses and the broad one hits.
+    notes = run(REGISTRY, "note_search", scope, ToolContext(),
+                {"query": "онбординг для новых пользователей", "source": ""})
+    assert "через шаблоны" in notes
+    assert "инфру" in run(REGISTRY, "fact_recall", scope, ToolContext(),
+                                       {"topic": "Костя", "include_history": False})
+    assert "батарейки" in run(REGISTRY, "list_show", scope, ToolContext(),
+                              {"list_name": "Покупки", "as_text": True})
 
 
 # Errors that make every remaining scenario meaningless: the run stops on these

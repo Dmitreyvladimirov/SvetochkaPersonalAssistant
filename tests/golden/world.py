@@ -1,10 +1,13 @@
 """The world the golden scenarios run in: a connected Google account with a small,
-deliberately awkward mailbox and calendar.
+deliberately awkward mailbox and calendar, and the notes, facts and lists a user
+of three months would have.
 
 Without this the run measured less than it looked like it did — every
 `mail_search` and `calendar_query` answered "Google не подключён" before reaching
-any query logic, so a whole class of failures (searching once and giving up,
-offering the wrong ticket) was invisible to 65 scenarios by construction.
+any query logic, and every `note_search`, `fact_recall` and `list_show` answered
+into an empty database, so a whole class of failures (searching once and giving
+up, offering the wrong ticket, asking the user for better words) was invisible to
+65 scenarios by construction.
 
 The mailbox is modelled on the real one that broke it on 2026-09-12: the Colombia
 ticket never says "Colombia", the party ticket is in Hebrew, and an old London
@@ -101,11 +104,39 @@ def search_mail(user_id: int, query: str, *, limit: int = 5) -> list[dict]:
     return hits[:limit]
 
 
+# What the scenarios ask about, worded so a literal search misses and a broadened
+# one finds: the note says "через шаблоны", the question says "для новых".
+NOTES = [
+    ("онбординг через шаблоны, а не через пустой холст", "Vespera"),
+    ("продукт без онбординга не продаётся", ""),
+    ("Turilin подключил Claude Code к телеграму — посмотреть, как сделан цикл", ""),
+    ("реферальную программу отложить до весны, сначала биллинг", "Vespera"),
+    ("врач Иванова принимает по вторникам, Клалит на Дизенгоф", ""),
+    ("бюджет на квартал: инфра ~$120, модели ~$60", "Vespera"),
+]
+FACTS = [
+    ("Костя", "отвечает за", "инфру и бэкапы"),
+    ("врач Светы", "это", "Иванова"),
+]
+LISTS = {
+    "Покупки": ["молоко", "батарейки", "кофе"],
+    "Сегодня": ["позвонить маме", "оплатить счёт"],
+}
+
+
 def install(monkeypatch) -> None:
-    """A connected Google, a mailbox and a calendar for the whole golden run."""
+    """A connected Google with its mailbox and calendar, and the user's own notes,
+    facts and lists — without them a read tool answers into nothing and the reply
+    proves nothing about how Svetochka searches."""
     from sveta.core import db
     db.save_oauth_token(1, "google", "dima@example.com", crypto.encrypt("rt"),
                         scopes=" ".join(google.SCOPES))
+    for body, project in NOTES:
+        db.create_note(1, body, project=project or None)
+    for subject, predicate, obj in FACTS:
+        db.remember_fact(1, subject, predicate, obj)
+    for name, items in LISTS.items():
+        db.add_list_items(1, db.get_or_create_list(1, name)["id"], items)
     monkeypatch.setattr(google, "search_mail", lambda uid, q, limit=5: search_mail(uid, q, limit=limit))
     monkeypatch.setattr(google, "list_events",
                         lambda uid, start, end, query="", limit=20: [
