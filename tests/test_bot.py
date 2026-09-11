@@ -251,3 +251,15 @@ def test_list_undo_cannot_remove_another_registered_users_line(monkeypatch):
     bot.handle_update({"update_id": 2, "callback_query": {"id": "cb", "data": f"undo:l:{iid}",
                        "message": {"message_id": 1, "chat": {"id": 111}}}})
     assert iid in fake.list_items and "уже убрала" in sent.messages[-1][1]
+
+
+def test_command_replies_stay_out_of_the_agent_history(monkeypatch):
+    """A /connect screen said 'не подключён'; the next agent turn must not see it
+    and must call the tool instead of answering from memory."""
+    fake, sent, client = wire(monkeypatch, ["ок"])
+    bot.handle_update(msg("/connect", update_id=1))
+    bot.handle_update(msg("привет", update_id=2))
+    bot.handle_update(msg("найди письмо", update_id=3))
+    history = client.messages.requests[-1]["messages"]
+    assert all("Подключения" not in m["content"] for m in history if isinstance(m["content"], str))
+    assert history[0]["content"] == "привет"

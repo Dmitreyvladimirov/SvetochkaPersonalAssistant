@@ -72,8 +72,12 @@ class FakeDB:
         return dict(row) if row and row["user_id"] == user_id else None
 
     def recent_exchanges(self, user_id, limit=8):
+        # Command replies ("/connect" → "Google — не подключён") are status screens,
+        # not conversation: fed into the history they teach the model stale facts.
         rows = [r for r in self.inbox.values()
-                if r["user_id"] == user_id and (r["raw_text"] or r.get("transcript")) and r["reply_text"]]
+                if r["user_id"] == user_id and (r["raw_text"] or r.get("transcript")) and r["reply_text"]
+                and r["kind"] in ("text", "voice")
+                and not (r["raw_text"] or r.get("transcript") or "").startswith("/")]
         return [{"raw_text": r["raw_text"] or r.get("transcript"), "reply_text": r["reply_text"]}
                 for r in rows[-limit:]]
 

@@ -476,6 +476,8 @@ def recent_exchanges(user_id: int, limit: int = 8) -> list[dict]:
                     """SELECT COALESCE(raw_text, transcript) AS raw_text, reply_text FROM inbox_items
                        WHERE user_id = %s AND COALESCE(raw_text, transcript) IS NOT NULL
                          AND reply_text IS NOT NULL
+                         AND kind IN ('text', 'voice')
+                         AND COALESCE(raw_text, transcript) NOT LIKE '/%%'
                        ORDER BY id DESC LIMIT %s""",
                     (user_id, limit),
                 )
