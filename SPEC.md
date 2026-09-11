@@ -1,12 +1,13 @@
 # Spec: Svetochka — personal assistant
 
-**Status:** accepted 2026-09-03, version 0.7. Code is written strictly against this
+**Status:** accepted 2026-09-03, version 0.8. Code is written strictly against this
 document. Version history: 0.1 (09-01) base spec · 0.2 (09-02) Turilin's approach,
 hybrid, account reading · 0.3 (09-03) agent with tools, lists, second brain ·
 0.4 (09-03) memory, persona as a variable, provider comparison · 0.5 (09-03) own
 Railway project, English-only documentation rule · 0.6 (09-03) multi-user-ready
 data model and `UserScope` · 0.7 (09-12) attachments and trip extraction, an
-optional `tz` on dated writes, the strict-schema budget.
+optional `tz` on dated writes, the strict-schema budget · 0.8 (09-12) photos and
+documents as intake (FR-59…FR-61).
 
 The research this spec grew out of (product, market research, tech lead / QA):
 `RESEARCH.md`. This document is the layer above it: requirements with acceptance
@@ -167,6 +168,9 @@ Every requirement has an acceptance criterion checkable by hand or by a test.
 | FR-43 | Next-step suggestion | M | After a reply the agent may suggest ≤3 actions as buttons. **None is executed without a tap.** Test: the reply to S-13 contains suggestions, no new DB rows |
 | FR-44 | Playbooks as data | S | A typical situation ("trip") is a markdown file; adding a playbook needs no Python change; the agent applies it when a tool returns an event of that type |
 | FR-45 | Memory of facts | S | "Света сменила врача" → a fact with `valid_from`; the old one is closed with `valid_to`, not deleted; the agent answers with the current one |
+| FR-59 | A photo or a document sent into the chat is intake, not noise | M | Sharing a file with or without a caption produces an inbox row of that kind and a note; nothing is silently dropped, and the reply names what was understood |
+| FR-60 | What is written on the file becomes searchable text | M | A boarding pass, a receipt, a screenshot of text or a PDF → its text is read once by the cheap model and stored with the note, so "что я сохранял про X" finds it |
+| FR-61 | A stored file comes back on request | S | "пришли тот чек" → the file itself into the chat, re-sent by its Telegram id without a second upload |
 
 ### 4.2. Knowledge
 
@@ -317,6 +321,7 @@ construction rather than by discipline, and it costs nothing in the single-user 
 | `mail_send_attachment` | Gmail, read; the file goes to **the user's own chat**, never to the model; documents and images only | none — the model never sees the bytes and no one else can receive them (NFR-8) |
 | `mail_extract_trip` | decrypts the body **for the cheap model only**; the agent receives validated flight legs, never the text | none |
 | `notes_propose` | nothing; records a split for one-tap saving | this is FR-13 |
+| `note_send_file` | re-sends the file attached to a note **to the user's own chat** by its Telegram id | none — same rationale as `mail_send_attachment` |
 | `fact_remember`, `fact_recall` | Postgres | none |
 | `preference_set`, `preference_list` | Postgres | none |
 | `suggest(actions[])` | nothing; renders buttons | this is FR-43 |
@@ -328,6 +333,14 @@ at the **airport's** local time, and an event or a reminder pinned to the user's
 zone would be hours off (`sveta/core/airports.py` maps the IATA codes that appear in
 this user's mail; an unknown code falls back to the user's zone and says so on the
 card).
+
+**A file the user sends is read once, by the cheap model.** A photo or a document
+is downloaded from Telegram, shown to `claude-haiku-4-5` as an image or a PDF
+document block with a fixed instruction, and what it reads becomes the text of the
+incoming item — from there the pipeline is the ordinary one, so a scanned boarding
+pass is filed, searched and recalled like a typed note (FR-59, FR-60). The bytes are
+never stored: Telegram keeps the file and its `file_id` is enough to send it back
+(FR-61), which also means a re-sent photo is deduplicated by that id.
 
 **Two ways a tool may read an email body** (§8 is about what reaches *the agent*,
 which is what an injection can steer): `mail_read_body` shows it to the agent and is
@@ -494,7 +507,7 @@ only the columns specific to each table.
 | Table | Purpose | Key points |
 |---|---|---|
 | `users` | who Svetochka talks to | `telegram_chat_id TEXT UNIQUE`, `tz`, `status`, `created_at`; v1 has one row, seeded from `SVETA_ALLOWED_CHAT_IDS` |
-| `inbox_items` | everything incoming, raw | `tg_update_id BIGINT UNIQUE` — the whole idempotency story (global, not per user: Telegram update ids are global) |
+| `inbox_items` | everything incoming, raw | `tg_update_id BIGINT UNIQUE` — the whole idempotency story (global, not per user: Telegram update ids are global); `file_id`, `file_name`, `file_mime` for voice, photos and documents; `transcript` holds what was heard or read |
 | `notes` | notes, ideas, links | `source`, `source_ref`, `UNIQUE (user_id, source, source_ref)`; index `to_tsvector('russian', …)` |
 | `lists` / `list_items` | lists | `UNIQUE (user_id, name)`; `checked_at`, `position`, `moved_from` |
 | `reminders` | reminders | `UNIQUE (user_id, dedup_key)`; partial index on `status='scheduled'` |
@@ -534,6 +547,7 @@ deduplicate before the model call (`CONTEXT.md`, entry 13).
 |---|---|
 | A foreign chat_id gets silence, not a refusal | a refusal confirms the bot exists |
 | An email body never reaches the model without an explicit request | `mail_search` returns subject and snippet; `mail_read_body` is behind a tap; `mail_extract_trip` gives the body to the cheap model only and returns fields |
+| A file the user sent is read once and not kept | only the text the cheap model read is stored; the bytes stay with Telegram, addressed by `file_id` |
 | A file from an email is re-served only to its owner, and only as a document or an image | `mail_send_attachment` sends to `scope.chat_id` alone, with a type allowlist so the bot is not a delivery channel for a phishing payload |
 | Bodies and tokens — Fernet at field level | the key lives only in env; a dump without the key is inert |
 | Minimal scopes | `calendar.events` + `gmail.readonly` |
