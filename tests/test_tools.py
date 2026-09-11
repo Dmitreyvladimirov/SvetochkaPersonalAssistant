@@ -10,11 +10,17 @@ def scope(uid=1):
     return UserScope(user_id=uid, chat_id="111", tz="Asia/Jerusalem")
 
 
-def test_every_tool_schema_is_strict():
+def test_every_tool_schema_is_closed_and_writers_are_strict():
+    from sveta.tools import STRICT_TOOLS
+    names = set()
     for d in definitions(REGISTRY):
-        assert d["strict"] is True
+        names.add(d["name"])
+        assert d["strict"] is (d["name"] in STRICT_TOOLS)
         assert d["input_schema"]["additionalProperties"] is False
         assert set(d["input_schema"]["required"]) == set(d["input_schema"]["properties"].keys())
+    assert STRICT_TOOLS <= names
+    # The API's grammar budget: measured 2026-09-12 at seven strict tools.
+    assert len(STRICT_TOOLS) <= 7
 
 
 def test_unknown_tool_is_an_error_not_an_action(monkeypatch):

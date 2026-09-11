@@ -35,10 +35,22 @@ def _strict(schema: dict) -> dict:
     return out
 
 
+# The API compiles strict schemas into one grammar and refuses the request with
+# 400 "Schema is too complex" past a budget that, measured on 2026-09-12, is seven
+# tools of this shape. Strict therefore goes to the tools that WRITE — a malformed
+# argument there is a wrong record, not a wrong answer. Every other tool still
+# gets additionalProperties=false and required in its schema (the model rarely
+# strays) and validates its arguments in Python (a TypeError comes back to the
+# model as text, never as an action).
+STRICT_TOOLS = frozenset({"reminder_create", "list_add", "list_check", "list_move",
+                          "link_save", "note_save", "fact_remember"})
+
+
 def definitions(tools: list[Tool]) -> list[dict]:
     """What the API receives."""
     return [{"name": t.name, "description": t.description,
-             "input_schema": _strict(t.input_schema), "strict": True} for t in tools]
+             "input_schema": _strict(t.input_schema), "strict": t.name in STRICT_TOOLS}
+            for t in tools]
 
 
 class UnknownTool(Exception):
