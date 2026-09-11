@@ -63,7 +63,10 @@ def _check(scenario: dict, calls: list[tuple[str, dict]]) -> list[str]:
 @pytest.mark.skipif(not os.environ.get("SVETA_GOLDEN"), reason="set SVETA_GOLDEN=1 to spend money")
 def test_golden_set(monkeypatch):
     install(monkeypatch)
-    from sveta.core import fetch, llm
+    from sveta.core import config, fetch, llm
+    # FR-38's per-user daily limit is not a property under test: 60+ scenarios on
+    # Sonnet cost ~$1.6, above the production default of $1.50.
+    monkeypatch.setattr(config, "DAILY_USD_LIMIT", 100.0)
     # The golden set measures tool choice, not the network: every URL "opens".
     monkeypatch.setattr(fetch, "get", lambda url: fetch.FetchResult(url=url, final_url=url, status=200,
                                                                     title="Page", summary="Summary."))
