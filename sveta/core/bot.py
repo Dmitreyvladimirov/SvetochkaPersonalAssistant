@@ -39,8 +39,8 @@ HELP = (
     "• календарь и почта после /google: «что у меня завтра», «поставь встречу …» (по кнопке), "
     "«найди письмо про …»\n"
     "• копии заметок в Notion после /notion <ссылка на базу>\n\n"
-    "/ping — жива ли · /stats — расходы · /memory — что помню о тебе · /rss — ленты · "
-    "/google — подключить Google · /notion — витрина"
+    "/connect — подключить Google и Notion · /ping — жива ли · /stats — расходы · "
+    "/memory — что помню о тебе · /rss — ленты"
 )
 
 
@@ -159,7 +159,8 @@ def _process_text(scope: UserScope, item_id: int, text: str, chat_id, *,
     if text.startswith("/"):
         reply = _command(scope, text)
         db.mark_item(item_id, status="done", reply_text=reply)
-        _reply(chat_id, progress_id, prefix + reply)
+        markup = _connect_keyboard(scope) if text.split()[0].lower() in ("/start", "/connect") else None
+        _reply(chat_id, progress_id, prefix + reply, markup)
         return
 
     if _URL_RE.match(text):
@@ -221,7 +222,9 @@ def _run_agent(scope: UserScope, item_id: int, text: str, chat_id, *,
 
 def _command(scope: UserScope, text: str) -> str:
     cmd = text.split()[0].lower()
-    if cmd in ("/start", "/help"):
+    if cmd == "/start":
+        return HELP + "\n\n" + _connect_text(scope)
+    if cmd == "/help":
         return HELP
     if cmd == "/ping":
         return "Жива."
@@ -238,6 +241,8 @@ def _command(scope: UserScope, text: str) -> str:
         return _google_command(scope)
     if cmd == "/notion":
         return _notion_command(scope, text.split()[1:])
+    if cmd == "/connect":
+        return _connect_text(scope)
     if cmd == "/memory":
         from sveta.tools import preferences as prefs_tool
         return prefs_tool.MEMORY_SHOW.fn(scope, ToolContext())
@@ -286,6 +291,40 @@ def _rss_command(scope: UserScope, args: list[str]) -> str:
         db.delete_source(scope.user_id, sources[n - 1]["id"])
         return f"Убрала ленту {sources[n - 1].get('title') or sources[n - 1]['url']}."
     return "Команды: /rss · /rss add <url> · /rss rm <номер>"
+
+
+def _connect_text(scope: UserScope) -> str:
+    """The services screen: one message, the buttons come from _connect_keyboard.
+    A tap opens the consent page itself (a Telegram URL button), nothing to copy."""
+    lines = ["Подключения:"]
+    g = db.get_oauth_token(scope.user_id, "google")
+    if not google.configured():
+        lines.append("• Google (календарь, почта) — не настроен на сервере")
+    elif g and not g.get("last_error"):
+        lines.append(f"• Google — подключён ({g['account_email']})")
+    elif g:
+        lines.append(f"• Google — ошибка: {g['last_error'][:60]}; переподключи")
+    else:
+        lines.append("• Google (календарь, почта) — не подключён")
+    n = db.get_oauth_token(scope.user_id, "notion")
+    if not notion.configured():
+        lines.append("• Notion (копии заметок) — не настроен на сервере")
+    elif n or (config.NOTION_TOKEN and scope.pref("notion.notes_db")):
+        where = scope.pref("notion.notes_db")
+        lines.append(f"• Notion — подключён" + (f", витрина выбрана" if where else ", витрина не выбрана: /notion <ссылка>"))
+    else:
+        lines.append("• Notion (копии заметок) — не подключён")
+    lines.append("Нажми кнопку, разреши доступ, и я напишу, когда всё встанет.")
+    return "\n".join(lines)
+
+
+def _connect_keyboard(scope: UserScope) -> dict | None:
+    rows = []
+    if google.configured():
+        rows.append([{"text": "Подключить Google", "url": google.auth_url(scope.user_id)}])
+    if notion.oauth_configured():
+        rows.append([{"text": "Подключить Notion", "url": notion.auth_url(scope.user_id)}])
+    return {"inline_keyboard": rows} if rows else None
 
 
 def _google_command(scope: UserScope) -> str:

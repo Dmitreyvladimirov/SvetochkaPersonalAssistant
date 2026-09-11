@@ -111,3 +111,27 @@ def test_no_mirror_without_a_database(monkeypatch):
     monkeypatch.setattr(notion, "_post", lambda path, payload, token: (_ for _ in ()).throw(AssertionError("must not post")))
     bot.handle_update(msg("x", update_id=1))
     assert len(fake.notes) == 1
+
+
+def test_connect_screen_has_url_buttons_and_states(monkeypatch):
+    from sveta.core import crypto, google
+    fake, sent, client = wire(monkeypatch)
+    bot.handle_update(msg("/connect", update_id=1))
+    text, markup = sent.messages[-1][1], sent.messages[-1][2]
+    assert "Google (календарь, почта) — не настроен на сервере" in text and markup is None
+
+    for name, value in (("GOOGLE_CLIENT_ID", "g"), ("GOOGLE_CLIENT_SECRET", "s"),
+                        ("NOTION_CLIENT_ID", "n"), ("NOTION_CLIENT_SECRET", "s"), ("PUBLIC_DOMAIN", "sveta.example")):
+        monkeypatch.setattr(config, name, value)
+    bot.handle_update(msg("/connect", update_id=2))
+    text, markup = sent.messages[-1][1], sent.messages[-1][2]
+    assert "Google (календарь, почта) — не подключён" in text and "Notion (копии заметок) — не подключён" in text
+    buttons = [b for row in markup["inline_keyboard"] for b in row]
+    assert buttons[0]["text"] == "Подключить Google" and buttons[0]["url"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert buttons[1]["text"] == "Подключить Notion" and buttons[1]["url"].startswith("https://api.notion.com/v1/oauth/authorize?")
+    assert "callback_data" not in buttons[0]
+
+    fake.save_oauth_token(1, "google", "dima@example.com", crypto.encrypt("rt"))
+    bot.handle_update(msg("/start", update_id=3))
+    text = sent.messages[-1][1]
+    assert "Я Светочка" in text and "Google — подключён (dima@example.com)" in text
