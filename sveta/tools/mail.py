@@ -15,6 +15,12 @@ from sveta.tools import Tool
 logger = logging.getLogger(__name__)
 
 
+def _client():
+    """The cheap model, behind its own name so tests can replace it without
+    touching the agent's client."""
+    return llm.client()
+
+
 def _fmt(m: dict, tz: str) -> str:
     when = m["received_at"].astimezone(ZoneInfo(tz)).strftime("%d.%m %H:%M") if m.get("received_at") else "—"
     line = f"- [{m['gmail_id']}] {when} · {m.get('sender') or '?'} · {m.get('subject') or '(без темы)'}\n  {(m.get('snippet') or '')[:200]}"
@@ -24,18 +30,88 @@ def _fmt(m: dict, tz: str) -> str:
     return line
 
 
-def _search(scope: UserScope, ctx: ToolContext, query: str) -> str:
-    query = (query or "").strip()
-    if not query:
-        return "Error: query is empty."
+_QUERY_SYSTEM = (
+    "Ты превращаешь просьбу человека в поисковые запросы Gmail. Сегодня {today}, "
+    "человек живёт в Израиле и получает письма по-русски, по-английски и на иврите. "
+    "Верни ТОЛЬКО JSON вида {{\"queries\": [\"...\"], \"key_terms\": [\"...\"]}}. "
+    "queries — до 4 запросов в синтаксисе Gmail, от самого точного к самому широкому. "
+    "Разворачивай смысл, а не переводи буквально: страна — это её города и аэропорты "
+    "(Колумбия → Bogota OR BOG OR Medellin OR Cartagena), событие — площадка и билетный "
+    "сервис, перелёт — авиакомпании и слова ticket/booking/e-ticket/boarding. Используй OR "
+    "и скобки, from: для типичных отправителей, after:/before: в формате YYYY/MM/DD, когда "
+    "человек назвал срок, newer_than:1y когда не назвал. Последний запрос — самый широкий: "
+    "одно-два сильных слова без фильтров. key_terms — слова, по которым видно, что письмо "
+    "действительно про то, что просили (город, аэропорт, название, имя), на всех языках. "
+    "Ничего не выдумывай и не пиши текст вокруг JSON."
+)
+MAX_QUERIES = 4
+
+
+def _plan_queries(scope: UserScope, ctx: ToolContext, what: str, when: str) -> tuple[list[str], list[str]]:
+    """Gmail queries and the words that prove a hit is the right one. The cheap
+    model does the unfolding — a country into its cities, a trip into airlines —
+    because the agent should not have to guess Gmail syntax and the user should
+    not be asked to guess the airline (found live 2026-09-12)."""
+    from datetime import date
+    fallback = ([what], [w for w in what.split() if len(w) > 3])
+    ask = what if not when else f"{what} (срок: {when})"
     try:
-        hits = google.search_mail(scope.user_id, query, limit=5)
-    except google.NotConnected as e:
-        return f"Error: {e}"
-    except google.GoogleError as e:
-        return f"Error: mail unavailable ({e}). Tell the user honestly."
+        llm.check_budget(scope.user_id)
+        with llm.Timer() as t:
+            response = _client().messages.create(
+                model=config.CHEAP_MODEL, max_tokens=600,
+                system=_QUERY_SYSTEM.format(today=date.today().isoformat()),
+                messages=[{"role": "user", "content": ask[:500]}])
+        usage = llm.usage_of(response)
+        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "mailquery", config.CHEAP_MODEL, usage,
+                           llm.price(config.CHEAP_MODEL, usage), t.ms)
+        data = _json_object("".join(b.text for b in response.content if b.type == "text")) or {}
+    except llm.BudgetExceeded:
+        return fallback
+    except Exception as e:  # noqa: BLE001 — the type only; the request is not logged
+        logger.warning("mail: query planning failed (%s)", type(e).__name__)
+        return fallback
+    queries = [_clean(q, 200) for q in (data.get("queries") or []) if _clean(q, 200)][:MAX_QUERIES]
+    terms = [_clean(t, 40) for t in (data.get("key_terms") or []) if _clean(t, 40)][:8]
+    return (queries or fallback[0], terms or fallback[1])
+
+
+def _matches(hit: dict, terms: list[str]) -> bool:
+    haystack = f"{hit.get('subject', '')} {hit.get('sender', '')} {hit.get('snippet', '')}".lower()
+    return any(term.lower() in haystack for term in terms)
+
+
+def _search(scope: UserScope, ctx: ToolContext, what: str, when: str = "") -> str:
+    """A ladder, not one shot: queries run from the most precise to the broadest
+    until something is found, and the result says what was tried — so the agent
+    neither repeats the same words nor hands the searching back to the user."""
+    what = " ".join((what or "").split())
+    if not what:
+        return "Error: what is empty — say what to look for."
+    queries, terms = _plan_queries(scope, ctx, what, " ".join((when or "").split()))
+    tried: list[str] = []
+    hits: list[dict] = []
+    seen_ids: set[str] = set()
+    for query in queries:
+        tried.append(query)
+        try:
+            found = google.search_mail(scope.user_id, query, limit=5)
+        except google.NotConnected as e:
+            return f"Error: {e}"
+        except google.GoogleError as e:
+            return f"Error: mail unavailable ({e}). Tell the user honestly."
+        for hit in found:
+            if hit["gmail_id"] not in seen_ids:
+                seen_ids.add(hit["gmail_id"])
+                hits.append(hit)
+        if hits:
+            break
+    attempts = "Tried: " + " | ".join(tried)
     if not hits:
-        return f"No mail matches '{query}'. Say so honestly; suggest other words."
+        return (f"Nothing found for '{what}'. {attempts}\n"
+                "Say so honestly. Do NOT list guesses for the user to choose from and do NOT "
+                "search the same words again — if a narrowing detail would really help, ask for "
+                "exactly one (a sender, a month).")
     rows = []
     for h in hits:
         rows.append({"gmail_id": h["gmail_id"], "thread_id": h.get("thread_id"), "sender": h.get("sender"),
@@ -43,22 +119,36 @@ def _search(scope: UserScope, ctx: ToolContext, query: str) -> str:
                      "received_at": h.get("received_at"),
                      "body_enc": crypto.encrypt(h.get("body") or "") if h.get("body") else None})
     db.save_mail_messages(scope.user_id, rows)
-    text = f"{len(hits)} message(s) (id in brackets; use mail_read_body for the full text):\n" + \
-           "\n".join(_fmt(h, scope.tz) + f"\n  {h.get('link', '')}" for h in hits)
-    tagged = " ".join(f"{h.get('subject', '')} {h.get('sender', '')}" for h in hits)
+    relevant = [h for h in hits if _matches(h, terms)] if terms else hits
+    shown = relevant or hits
+    text = (f"{len(shown)} message(s) for '{what}' (id in brackets; mail_extract_trip for flights, "
+            "mail_send_attachment for a file, mail_read_body for the full text):\n" +
+            "\n".join(_fmt(h, scope.tz) + f"\n  {h.get('link', '')}" for h in shown))
+    if terms and not relevant:
+        text += (f"\n\nNONE of these mentions {', '.join(terms[:4])}, so they are probably NOT what "
+                 "was asked for. Do not offer them as the answer: say the search found only other "
+                 "mail, and try mail_search once more with a different angle before asking.")
+    text += f"\n{attempts}"
+    tagged = " ".join(f"{h.get('subject', '')} {h.get('sender', '')}" for h in shown)
     return text + playbooks.attach(tagged)
 
 
 MAIL_SEARCH = Tool(
     name="mail_search",
-    description=("Search the user's Gmail. Pass a Gmail-style query built from the user's words "
-                 "(e.g. 'билет Synergy', 'from:booking.com', 'посадочный talon newer_than:30d'). "
-                 "Returns subject, sender, date, snippet and the attachment names (📎) — never the "
-                 "body. Use for 'найди письмо/билет', 'когда у меня самолёт', 'что писал X'. For "
-                 "tickets: then mail_extract_trip for the flights and mail_send_attachment for the PDF."),
+    description=("Find mail. Pass the user's own words in `what` ('билет на вечеринку', "
+                 "'билеты в Колумбию', 'счёт за электричество') and any time frame they named in "
+                 "`when` ('в эту субботу', 'в прошлом месяце'). The tool unfolds the meaning "
+                 "itself — a country into its cities and airports, a trip into airlines, a word "
+                 "into its English and Hebrew equivalents — and tries several Gmail queries from "
+                 "precise to broad. Do NOT write Gmail syntax yourself, do NOT repeat the same "
+                 "search with reworded Russian, and do NOT ask the user which airline or city to "
+                 "try: the tool already tried the obvious ones and says which."),
     input_schema={
         "type": "object",
-        "properties": {"query": {"type": "string", "description": "Gmail search query."}},
+        "properties": {
+            "what": {"type": "string", "description": "What to find, in the user's own words."},
+            "when": {"type": "string", "description": "The time frame the user named, or empty string."},
+        },
     },
     fn=_search,
 )

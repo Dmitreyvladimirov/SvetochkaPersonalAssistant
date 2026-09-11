@@ -63,3 +63,8 @@
 {"message": "напомни в пятницу в 10 про отчёт и поставь это в календарь", "expect_tools": ["reminder_create", "calendar_create"], "forbid_tools": ["note_save"]}
 {"message": "пришли мне билет в чат, занеси перелёты в календарь и напомни за день до вылета", "expect_tools": ["mail_search"], "forbid_tools": ["note_save", "mail_read_body"]}
 {"message": "скинь PDF с билетом из письма Air Europa", "expect_tools": ["mail_search"], "forbid_tools": ["note_save", "mail_read_body"]}
+{"message": "найди мои билеты в Колумбию", "expect_tools": ["mail_search"], "expect_args": {"mail_search": {"what": "билеты в Колумбию"}}, "forbid_tools": ["note_search"]}
+{"message": "найди мой билет на вечеринку в эту субботу", "expect_tools": ["mail_search"], "forbid_tools": ["note_search", "calendar_query"]}
+{"message": "найди счёт за электричество за прошлый месяц", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
+{"message": "пришли мне чек, который я скидывал", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["mail_search"]}
+{"message": "вот скан посадочного", "expect_tools_any": ["note_save"], "forbid_tools": ["reminder_create", "list_add"]}

@@ -58,7 +58,9 @@ def test_search_lists_attachments_and_parser_finds_them(monkeypatch):
                                    {"mimeType": "application/pdf", "filename": "eticket_7PVOQO.pdf",
                                     "body": {"attachmentId": "att-1", "size": 15}}]}}
     monkeypatch.setattr(google, "_get", get)
-    out = run(REGISTRY, "mail_search", scope(), ToolContext(), {"query": "билет"})
+    from sveta.tools import mail as mail_tool
+    monkeypatch.setattr(mail_tool, "_plan_queries", lambda scope, ctx, what, when: (["билет"], []))
+    out = run(REGISTRY, "mail_search", scope(), ToolContext(), {"what": "билет", "when": ""})
     assert "📎 eticket_7PVOQO.pdf (1 KB)" in out and "Playbook «trip»" in out
     assert google.message_attachments(1, "m2")[0]["attachment_id"] == "att-1"
     assert google.download_attachment(1, "m2", "att-1") == b"%PDF-1.4 ticket"
