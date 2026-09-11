@@ -5,11 +5,28 @@ dump without it is inert. Nothing here logs its input or output."""
 from sveta.core import config
 
 
+def _key_bytes() -> bytes:
+    """The key as Fernet wants it. A key pasted without its trailing '=' padding
+    (43 url-safe chars, which is how `SVETA_TOKEN_KEY` was entered in Railway on
+    2026-09-03) is padded back; anything that does not decode to 32 bytes is
+    refused with a clear message."""
+    import base64
+    raw = (config.TOKEN_KEY or "").strip()
+    if not raw:
+        raise EnvironmentError("SVETA_TOKEN_KEY is not set")
+    padded = raw + "=" * (-len(raw) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode())
+    except (ValueError, TypeError) as e:
+        raise EnvironmentError(f"SVETA_TOKEN_KEY is not url-safe base64: {e}") from None
+    if len(decoded) != 32:
+        raise EnvironmentError(f"SVETA_TOKEN_KEY decodes to {len(decoded)} bytes, Fernet needs 32")
+    return padded.encode()
+
+
 def _fernet():
     from cryptography.fernet import Fernet
-    if not config.TOKEN_KEY:
-        raise EnvironmentError("SVETA_TOKEN_KEY is not set")
-    return Fernet(config.TOKEN_KEY.encode() if isinstance(config.TOKEN_KEY, str) else config.TOKEN_KEY)
+    return Fernet(_key_bytes())
 
 
 def encrypt(text: str) -> bytes:
