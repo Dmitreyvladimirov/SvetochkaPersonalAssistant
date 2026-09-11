@@ -12,8 +12,13 @@ _DIR = Path(__file__).resolve().parent
 
 # name → pattern over the text a tool produced (subject + sender for mail).
 TRIGGERS = {
-    "trip": re.compile(r"билет|перел[её]т|рейс|посадочн|boarding|flight|itinerary|e-?ticket|"
-                       r"booking|бронировани|reservation|отел[ья]|hotel|поезд|train", re.IGNORECASE),
+    # Anchored so "Onboarding", "Training", "constrained", "Hotel California" and
+    # "Booking.com: 15% off" stay out; the brief's trips section uses the same matcher.
+    "trip": re.compile(
+        r"(?<![\w-])(?:билет\w*|перел[её]т\w*|рейс\w?|посадочн\w*|авиа\w*|бронировани\w*|"
+        r"boarding pass|flight|itinerary|e-?ticket|booking confirmation|booking confirmed|"
+        r"hotel (?:booking|reservation|confirmation)|train ticket|check-in)(?![\w-])",
+        re.IGNORECASE),
 }
 
 

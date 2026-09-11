@@ -133,17 +133,27 @@ def database_id_from_link(link: str) -> str | None:
     return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
 
 
+REQUIRED_PROPERTIES = {"Name": "title", "Body": "rich_text", "Source": "select", "Note ID": "number"}
+
+
 def check_database(database_id: str, token: str) -> str:
-    """The database's title, or a NotionError naming what is wrong (not shared
-    with the integration, wrong id, bad token)."""
+    """The database's title, or a NotionError naming what is wrong: not shared,
+    wrong id, bad token, or a database without the properties the mirror
+    writes (a note would then fail with 400 on every save)."""
     status, body = _get(f"/databases/{database_id}", token)
     if status == 200:
         title = "".join(t.get("plain_text", "") for t in body.get("title", [])) or "(без названия)"
+        props = body.get("properties") or {}
+        missing = [name for name, kind in REQUIRED_PROPERTIES.items()
+                   if (props.get(name) or {}).get("type") != kind]
+        if missing:
+            raise NotionError(f"в базе «{title}» нет свойств {', '.join(missing)} — "
+                              "выбери базу «Светочка · Заметки» или добавь их")
         return title
     if status in (401, 403):
-        raise NotionError("токен не принят (проверь NOTION_TOKEN)")
+        raise NotionError("доступ не принят — переподключи Notion через /connect")
     if status == 404:
-        raise NotionError("база не найдена или не расшарена интеграции Svetochka (… → Connections)")
+        raise NotionError("база не найдена или не расшарена Светочке (выбери её на экране доступа)")
     raise NotionError(f"HTTP {status}")
 
 

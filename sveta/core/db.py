@@ -557,8 +557,8 @@ def get_note(user_id: int, note_id: int) -> dict | None:
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, body, project, source FROM notes WHERE id = %s AND user_id = %s",
-                            (note_id, user_id))
+                cur.execute("SELECT id, title, body, project, source, source_ref, created_at, notion_page_id "
+                            "FROM notes WHERE id = %s AND user_id = %s", (note_id, user_id))
                 row = cur.fetchone()
                 return dict(row) if row else None
     finally:

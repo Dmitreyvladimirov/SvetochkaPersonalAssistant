@@ -7,8 +7,9 @@ Notion failing does not prevent the Postgres save.
 
 ## Assumptions
 
-1. **OAuth is done from the chat, not from a laptop script.** `/google` sends an
-   authorisation link; Google redirects to
+1. **OAuth is done from the chat, not from a laptop script.** `/connect` shows the
+   services with a URL button each (Dimitry: a command per service is clumsy);
+   `/google` and `/notion` remain as aliases. The button opens the consent page; Google redirects to
    `GET /oauth/google/callback` on `sveta-web`; the code is exchanged and the
    refresh token stored in `oauth_tokens` under Fernet (§8), one row per
    `(user_id, provider, account_email)`. The `state` parameter is an HMAC of the
@@ -121,3 +122,16 @@ proposal, mail search, trip, "поставь напоминание и в кал
 in Railway; Calendar and Gmail APIs enabled; both redirect URIs registered
 (`/oauth/google/callback`, `/oauth/notion/callback`); the Notion integration is
 *public*. Then `/google` and `/notion` in the chat, and the consent screens.
+
+
+## Decisions recorded during review (2026-09-12)
+
+- `mail_messages.snippet`, `subject`, `sender` stay in the clear (FR-28 covers
+  bodies; `mail_search` matches on subject and sender). Revisit if a snippet ever
+  proves to be the sensitive part.
+- The Notion database is checked for `Name / Body / Source / Note ID` at pick
+  time (auto-pick and `/notion <link>`), never on each note.
+- The brief's "Поездки" section shows the two most recent trip-tagged mails from
+  the last 30 days that a `mail_search` fetched; there is no mail ingest yet.
+- Access tokens are not cached (one refresh per tool call); a 50-minute cache is
+  the first optimisation when Google calls become frequent.

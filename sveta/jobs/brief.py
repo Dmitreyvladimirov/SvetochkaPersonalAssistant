@@ -103,8 +103,11 @@ def _google_sections(user_id: int, day_start: datetime, day_end: datetime, zone)
             when = "весь день" if e["all_day"] else f"{e['start']:%H:%M}"
             place = f" @ {e['location']}" if e.get("location") else ""
             meetings.append(f"{when} {_one_line(e['summary'])}{place}")
-    except google.NotConnected:
-        pass
+    except google.NotConnected as e:
+        row = db.get_oauth_token(user_id, "google")
+        if row and row.get("last_error"):
+            # §9: a dead refresh is said, not swallowed — the brief is the daily place.
+            meetings.append(f"Google отвалился ({_one_line(str(e), 60)}). Переподключи: /connect")
     except Exception as e:  # noqa: BLE001
         logger.warning("brief: calendar skipped for user %s: %s", user_id, e)
     trips: list[str] = []

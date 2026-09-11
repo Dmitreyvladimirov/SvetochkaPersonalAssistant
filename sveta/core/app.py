@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from sveta.core import bot, config, db, google, notion, telegram
+from sveta.core import bot, config, crypto, db, google, notion, telegram
 from sveta.jobs import reminder_tick
 
 logging.basicConfig(level=logging.INFO,
@@ -40,6 +40,7 @@ async def _lifespan(_app: FastAPI):
     # Order matters: a missing variable must fail before any connection is tried,
     # so the log says "Missing required env vars" rather than a driver traceback.
     config.validate_secrets()
+    crypto.validate()
     db.init_db()
     db.seed_users(config.ALLOWED_CHAT_IDS, config.TZ)
     _register_webhook()
@@ -84,14 +85,14 @@ def google_callback(state: str = "", code: str = "", error: str = ""):
     if not user:
         raise HTTPException(status_code=400, detail="Unknown user")
     if error or not code:
-        telegram.send_message(f"Google не дал доступ ({error or 'нет кода'}). Попробуй /google ещё раз.",
+        telegram.send_message(f"Google не дал доступ ({error or 'нет кода'}). Попробуй ещё раз: /connect",
                               user["telegram_chat_id"])
         return HTMLResponse("<p>Доступ не выдан. Можно закрыть страницу.</p>")
     try:
         email = google.exchange_code(user_id, code)
-    except google.GoogleError as e:
-        logger.error("oauth: exchange failed for user %s: %s", user_id, e)
-        telegram.send_message("Не смогла обменять код Google на токен. Попробуй /google ещё раз.",
+    except Exception as e:  # noqa: BLE001 — network, TLS, anything: the chat must hear it (§9)
+        logger.error("oauth: google exchange failed for user %s: %s", user_id, type(e).__name__)
+        telegram.send_message("Не смогла обменять код Google на токен. Попробуй ещё раз: /connect",
                               user["telegram_chat_id"])
         return HTMLResponse("<p>Не получилось. Можно закрыть страницу.</p>", status_code=502)
     telegram.send_message(f"Google подключён: {email}. Календарь и почта теперь доступны — "
@@ -111,21 +112,25 @@ def notion_callback(state: str = "", code: str = "", error: str = ""):
     if not user:
         raise HTTPException(status_code=400, detail="Unknown user")
     if error or not code:
-        telegram.send_message(f"Notion не дал доступ ({error or 'нет кода'}). Попробуй /notion ещё раз.",
+        telegram.send_message(f"Notion не дал доступ ({error or 'нет кода'}). Попробуй ещё раз: /connect",
                               user["telegram_chat_id"])
         return HTMLResponse("<p>Доступ не выдан. Можно закрыть страницу.</p>")
     try:
         workspace = notion.exchange_code(user_id, code)
-        databases = notion.shared_databases(notion.token_for(user_id))
-    except notion.NotionError as e:
-        logger.error("oauth: notion exchange failed for user %s: %s", user_id, e)
-        telegram.send_message("Не смогла получить доступ к Notion. Попробуй /notion ещё раз.",
+        token = notion.token_for(user_id)
+        databases = notion.shared_databases(token)
+    except Exception as e:  # noqa: BLE001
+        logger.error("oauth: notion exchange failed for user %s: %s", user_id, type(e).__name__)
+        telegram.send_message("Не смогла получить доступ к Notion. Попробуй ещё раз: /connect",
                               user["telegram_chat_id"])
         return HTMLResponse("<p>Не получилось. Можно закрыть страницу.</p>", status_code=502)
     if len(databases) == 1:
-        db.set_preference(user_id, "notion.notes_db", databases[0]["id"], set_via="oauth")
-        text = (f"Notion подключён ({workspace}). Витрина: «{databases[0]['title']}» — "
-                "новые заметки будут появляться там.")
+        try:
+            title = notion.check_database(databases[0]["id"], token)
+            db.set_preference(user_id, "notion.notes_db", databases[0]["id"], set_via="oauth")
+            text = f"Notion подключён ({workspace}). Витрина: «{title}» — новые заметки будут появляться там."
+        except notion.NotionError as e:
+            text = f"Notion подключён ({workspace}), но {e}. Потом пришли ссылку: /notion <ссылка>"
     elif databases:
         names = "\n".join(f"- {d['title']}" for d in databases)
         text = (f"Notion подключён ({workspace}). Ты расшарил несколько баз:\n{names}\n"

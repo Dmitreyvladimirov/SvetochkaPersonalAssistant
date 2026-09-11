@@ -18,3 +18,13 @@ def test_missing_playbook_is_skipped_with_a_warning(monkeypatch, caplog):
         block = playbooks.attach("билет")
     assert "Playbook «trip»" in block and "Playbook «ghost»" not in block
     assert "playbook ghost: file missing" in caplog.text
+
+
+def test_ordinary_subjects_are_not_trips():
+    for subject in ("Onboarding checklist for new hires", "Training session tomorrow",
+                    "Квартальный отчёт: constrained budget", "Booking.com: 15% off summer",
+                    "Hotel California lyrics", "Re: поездка в бухгалтерию за печатью"):
+        assert playbooks.matching(subject) == [], subject
+    for subject in ("Your boarding pass", "E-ticket LY315", "Ваш билет на рейс", "Hotel booking confirmed",
+                    "Авиабилеты Тель-Авив — Берлин", "Бронирование подтверждено"):
+        assert playbooks.matching(subject) == ["trip"], subject

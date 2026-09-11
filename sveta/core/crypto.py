@@ -18,3 +18,12 @@ def encrypt(text: str) -> bytes:
 
 def decrypt(blob: bytes | memoryview) -> str:
     return _fernet().decrypt(bytes(blob)).decode("utf-8")
+
+
+def validate() -> None:
+    """Called at startup: a malformed SVETA_TOKEN_KEY must fail the boot with a
+    clear message, not the first OAuth exchange days later."""
+    try:
+        _fernet()
+    except Exception as e:  # noqa: BLE001
+        raise EnvironmentError(f"SVETA_TOKEN_KEY is not a valid Fernet key: {e}") from None

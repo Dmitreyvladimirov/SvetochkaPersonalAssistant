@@ -41,9 +41,11 @@ def test_notion_command_oauth_flow_and_database_pick(monkeypatch):
     fake.save_oauth_token(1, "notion", "Dima's workspace", crypto.encrypt("ntn_secret"))
     seen = {}
 
+    good = {"Name": {"type": "title"}, "Body": {"type": "rich_text"}, "Source": {"type": "select"}, "Note ID": {"type": "number"}}
+
     def get(path, token):
         seen["token"] = token
-        return (404, {}) if "bad" in seen else (200, {"title": [{"plain_text": "Светочка · Заметки"}]})
+        return (404, {}) if "bad" in seen else (200, {"title": [{"plain_text": "Светочка · Заметки"}], "properties": good})
     monkeypatch.setattr(notion, "_get", get)
     seen["bad"] = True
     bot.handle_update(msg("/notion https://www.notion.so/d/604162747642431eac01284c1faa855c", update_id=3))
@@ -70,6 +72,8 @@ def test_oauth_callback_picks_the_single_shared_database(monkeypatch):
     monkeypatch.setattr(notion, "_post_basic", lambda path, payload: (200, {"access_token": "ntn_x", "workspace_name": "Dima"}))
     monkeypatch.setattr(notion, "_post", lambda path, payload, token: (200, {"results": [
         {"id": "60416274-7642-431e-ac01-284c1faa855c", "title": [{"plain_text": "Светочка · Заметки"}]}]}))
+    good = {"Name": {"type": "title"}, "Body": {"type": "rich_text"}, "Source": {"type": "select"}, "Note ID": {"type": "number"}}
+    monkeypatch.setattr(notion, "_get", lambda path, token: (200, {"title": [{"plain_text": "Светочка · Заметки"}], "properties": good}))
     with TestClient(app_module.app) as client:
         r = client.get("/oauth/notion/callback", params={"state": notion.state_for(1), "code": "c"})
     assert r.status_code == 200
@@ -135,3 +139,46 @@ def test_connect_screen_has_url_buttons_and_states(monkeypatch):
     bot.handle_update(msg("/start", update_id=3))
     text = sent.messages[-1][1]
     assert "Я Светочка" in text and "Google — подключён (dima@example.com)" in text
+
+
+def test_database_without_the_expected_properties_is_refused(monkeypatch):
+    monkeypatch.setattr(notion, "_get", lambda path, token: (200, {"title": [{"plain_text": "Задачи"}],
+                                                               "properties": {"Name": {"type": "title"}}}))
+    try:
+        notion.check_database("60416274-7642-431e-ac01-284c1faa855c", "t")
+    except notion.NotionError as e:
+        assert "нет свойств Body, Source, Note ID" in str(e)
+    else:
+        raise AssertionError("must refuse")
+    good = {"Name": {"type": "title"}, "Body": {"type": "rich_text"}, "Source": {"type": "select"}, "Note ID": {"type": "number"}}
+    monkeypatch.setattr(notion, "_get", lambda path, token: (200, {"title": [{"plain_text": "Светочка · Заметки"}], "properties": good}))
+    assert notion.check_database("60416274-7642-431e-ac01-284c1faa855c", "t") == "Светочка · Заметки"
+
+
+def test_callback_network_error_is_told_to_the_chat(monkeypatch):
+    from fastapi.testclient import TestClient
+    from sveta.core import app as app_module, db, telegram
+    from tests.fakedb import install
+    fake = install(monkeypatch)
+    fake.add_user("111")
+    monkeypatch.setattr(db, "init_db", lambda: None)
+    monkeypatch.setattr(db, "seed_users", lambda chat_ids, tz: 0)
+    monkeypatch.setattr(config, "NOTION_CLIENT_ID", "nid")
+    monkeypatch.setattr(config, "NOTION_CLIENT_SECRET", "nsecret")
+    sent = []
+    monkeypatch.setattr(telegram, "send_message", lambda text, chat_id, reply_markup=None: sent.append(text) or 1)
+
+    def boom(path, payload):
+        raise TimeoutError("read timed out")
+    monkeypatch.setattr(notion, "_post_basic", boom)
+    with TestClient(app_module.app) as client:
+        r = client.get("/oauth/notion/callback", params={"state": notion.state_for(1), "code": "c"})
+    assert r.status_code == 502 and "Попробуй ещё раз: /connect" in sent[-1]
+
+
+def test_real_get_note_selects_what_the_mirror_reads():
+    import inspect
+    from sveta.core import db
+    sql = inspect.getsource(db.get_note)
+    for column in ("title", "source_ref", "created_at"):
+        assert column in sql

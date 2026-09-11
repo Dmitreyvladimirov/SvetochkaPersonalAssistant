@@ -15,9 +15,14 @@ from sveta.core import config, db
 TTL_SECONDS = 600
 
 
+def _key() -> bytes:
+    """A key derived from the token key with a label: the Fernet key itself is
+    never used as an HMAC key."""
+    return hashlib.sha256(b"svetochka-oauth-state:" + config.TOKEN_KEY.encode()).digest()
+
+
 def _mac(provider: str, user_id: int, nonce: str) -> str:
-    return hmac.new(config.TOKEN_KEY.encode(), f"{provider}:{user_id}:{nonce}".encode(),
-                    hashlib.sha256).hexdigest()[:32]
+    return hmac.new(_key(), f"{provider}:{user_id}:{nonce}".encode(), hashlib.sha256).hexdigest()[:32]
 
 
 def issue(provider: str, user_id: int) -> str:
