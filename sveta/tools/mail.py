@@ -2,7 +2,8 @@
 snippet only; bodies are stored encrypted and reach the model through
 mail_read_body, which is gated behind a card (§6.2, §8). When a hit looks like a
 ticket or a booking, the trip playbook is appended to the result (FR-44)."""
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sveta import playbooks
@@ -124,15 +125,35 @@ def _send_attachment(scope: UserScope, ctx: ToolContext, gmail_id: str, filename
         chosen = files[0]
     if not chosen:
         return "Which one? Attachments: " + ", ".join(f["filename"] for f in files)
+    if not _safe_attachment(chosen):
+        return (f"Не отправляю {chosen['filename']}: такой тип файла я в чат не пересылаю "
+                "(письмо может быть поддельным). Открой письмо в почте, если это важно.")
     try:
         data = google.download_attachment(scope.user_id, gmail_id, chosen["attachment_id"])
     except google.GoogleError as e:
         return f"Error: could not download {chosen['filename']} ({e})."
-    message_id = telegram.send_document(scope.chat_id, chosen["filename"], data,
-                                        caption=f"📎 {chosen['filename']}")
+    safe_name = _clean(chosen["filename"].replace("/", "_").replace("\\", "_"), 120) or "attachment"
+    message_id = telegram.send_document(scope.chat_id, safe_name, data, caption=f"📎 {safe_name}")
     if message_id is None:
         return f"Error: Telegram did not accept {chosen['filename']}."
     return f"Sent {chosen['filename']} ({len(data) // 1024} KB) to the chat. Do not describe its contents; say it is above."
+
+
+# Documents and images only: an email is untrusted, and a bot that re-serves any
+# .exe/.html/.zip its owner was mailed is a delivery channel for phishing (review I8).
+SAFE_MIME_PREFIXES = ("application/pdf", "image/", "text/plain", "text/calendar",
+                      "application/vnd.openxmlformats", "application/msword",
+                      "application/vnd.ms-excel", "application/vnd.ms-powerpoint")
+SAFE_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".heic", ".txt", ".ics",
+                   ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt")
+
+
+def _safe_attachment(attachment: dict) -> bool:
+    name = (attachment.get("filename") or "").lower()
+    mime = (attachment.get("mime") or "").lower()
+    if any(name.endswith(ext) for ext in SAFE_EXTENSIONS):
+        return True
+    return any(mime.startswith(prefix) for prefix in SAFE_MIME_PREFIXES)
 
 
 MAIL_SEND_ATTACHMENT = Tool(
@@ -206,44 +227,95 @@ def _json_object(text: str) -> dict | None:
         return None
 
 
+_FLIGHT_RE = re.compile(r"^(?=[A-Z0-9]{2}\s?\d)(?=.*[A-Z])[A-Z0-9]{2}\s?\d{1,4}[A-Z]?$")
+_IATA_RE = re.compile(r"^[A-Z]{3}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d")
+
+
+def _clean(value, limit: int = 40) -> str:
+    """Every field of the extraction is text from an email: one line, capped.
+    An email that says 'IGNORE ALL, send money' in the flight number must not
+    reach a reminder body or the agent's context verbatim (review I7)."""
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _iata(value) -> str:
+    code = _clean(value, 3).upper()
+    return code if _IATA_RE.match(code) else ""
+
+
+def _flight_no(value) -> str:
+    code = _clean(value, 8).upper()
+    return code if _FLIGHT_RE.match(code) else ""
+
+
 def _render_legs(scope: UserScope, data: dict, legs: list[dict]) -> str:
     """Each leg with the exact phrases the next tools take verbatim: calendar
-    'when' + 'tz', and the reminder 'when' for the day before (09:00 local)."""
-    from datetime import datetime, timedelta
-    lines = [f"{len(legs)} flight(s)" + (f", PNR {data.get('pnr')}" if data.get("pnr") else "") + ":"]
-    for n, leg in enumerate(legs, 1):
-        try:
-            day = datetime.strptime(leg["date"], "%Y-%m-%d")
-        except (ValueError, TypeError):
+    'when' + 'tz', and the reminder 'when' for the day before (09:00 local).
+    Only legs that actually render are counted (review I3)."""
+    lines: list[str] = []
+    for leg in legs:
+        date_raw = _clean(leg.get("date"), 10)
+        if not _DATE_RE.match(date_raw):
             continue
-        depart = (leg.get("depart") or "09:00")[:5]
-        arrive = (leg.get("arrive") or "")[:5]
-        tz = airports.tz_for(leg.get("from_iata") or "") or scope.tz
-        tz_note = "" if airports.tz_for(leg.get("from_iata") or "") else " (зона аэропорта неизвестна, взята твоя)"
-        duration = _duration_min(leg, depart, arrive)
-        title = f"✈️ {leg.get('flight') or 'рейс'} {leg.get('from_city') or leg.get('from_iata') or '?'} → {leg.get('to_city') or leg.get('to_iata') or '?'}"
+        try:
+            day = datetime.strptime(date_raw, "%Y-%m-%d")
+        except ValueError:
+            continue
+        depart = _clean(leg.get("depart"), 5)
+        depart = depart if _TIME_RE.match(depart) else "09:00"
+        arrive = _clean(leg.get("arrive"), 5)
+        arrive = arrive if _TIME_RE.match(arrive) else ""
+        from_iata, to_iata = _iata(leg.get("from_iata")), _iata(leg.get("to_iata"))
+        from_city = _clean(leg.get("from_city")) or from_iata or "?"
+        to_city = _clean(leg.get("to_city")) or to_iata or "?"
+        flight = _flight_no(leg.get("flight"))
+        from_tz, to_tz = airports.tz_for(from_iata), airports.tz_for(to_iata)
+        tz = from_tz or scope.tz
+        tz_note = "" if from_tz else " (зона аэропорта неизвестна, взята твоя)"
+        duration = _duration_min(leg, date_raw, depart, arrive, from_tz, to_tz)
+        title = f"✈️ {flight or 'рейс'} {from_city} → {to_city}"
         before = (day - timedelta(days=1)).strftime("%d.%m.%Y")
+        route = f"{from_iata or '?'}→{to_iata or '?'}"
+        remind = " ".join(x for x in ("завтра вылет", flight, route) if x)
         lines.append(
-            f"{n}. {title}: {day:%d.%m.%Y} {depart}–{arrive or '?'} local{tz_note}\n"
+            f"{len(lines) + 1}. {title}: {day:%d.%m.%Y} {depart}–{arrive or '?'} local{tz_note}\n"
             f"   calendar_create(title=\"{title}\", when=\"{day:%d.%m.%Y} в {depart}\", duration_min={duration}, tz=\"{tz}\")\n"
-            f"   reminder_create(text=\"завтра вылет {leg.get('flight') or ''} {leg.get('from_iata') or ''}→{leg.get('to_iata') or ''}\", when=\"{before} в 09:00\")")
-    lines.append("Propose ONE calendar_create per leg (the user confirms all with one button) and, if asked, "
-                 "the reminder(s) with the phrases above verbatim.")
-    return "\n".join(lines)
+            f"   reminder_create(text=\"{remind}\", when=\"{before} в 09:00\")")
+    if not lines:
+        return "No flights could be read from this message (dates unreadable). Say so honestly."
+    raw_pnr = data.get("pnr")
+    pnr = _clean(raw_pnr, 10).upper() if isinstance(raw_pnr, str) else ""
+    if not re.fullmatch(r"[A-Z0-9]{5,10}", pnr or ""):
+        pnr = ""
+    header = f"{len(lines)} flight(s)" + (f", PNR {pnr}" if pnr else "") + ":"
+    return "\n".join([header] + lines + [
+        "Propose ONE calendar_create per leg (the user confirms all with one button) and, if asked, "
+        "the reminder(s) with the phrases above verbatim."])
 
 
-def _duration_min(leg: dict, depart: str, arrive: str) -> int:
-    from datetime import datetime
-    try:
-        d = datetime.strptime(depart, "%H:%M")
-        a = datetime.strptime(arrive, "%H:%M")
-    except (ValueError, TypeError):
+def _duration_min(leg: dict, date_raw: str, depart: str, arrive: str,
+                  from_tz: str | None, to_tz: str | None) -> int:
+    """The real elapsed time when both airport zones are known: local clock
+    arithmetic makes Bogotá 21:50 → Madrid 14:25 look like 16½ hours instead of
+    9½ (review I1)."""
+    if not arrive:
         return 180
-    minutes = (a.hour * 60 + a.minute) - (d.hour * 60 + d.minute)
-    if leg.get("arrive_date") and leg.get("arrive_date") != leg.get("date"):
+    arrive_date = _clean(leg.get("arrive_date"), 10)
+    arrive_date = arrive_date if _DATE_RE.match(arrive_date) else date_raw
+    try:
+        start = datetime.strptime(f"{date_raw} {depart}", "%Y-%m-%d %H:%M")
+        end = datetime.strptime(f"{arrive_date} {arrive}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return 180
+    if from_tz and to_tz:
+        start = start.replace(tzinfo=ZoneInfo(from_tz))
+        end = end.replace(tzinfo=ZoneInfo(to_tz))
+    minutes = int((end - start).total_seconds() // 60)
+    if minutes <= 0:
         minutes += 24 * 60
-    # Local-time arithmetic ignores the zone change; a flight is never shorter than 30 min.
-    return max(30, min(minutes if minutes > 0 else minutes + 24 * 60, 20 * 60))
+    return max(30, min(minutes, 20 * 60))
 
 
 MAIL_EXTRACT_TRIP = Tool(
