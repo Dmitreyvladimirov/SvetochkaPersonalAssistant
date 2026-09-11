@@ -128,3 +128,12 @@ def test_range_for_phrases():
     assert google.range_for("в четверг", now, TZ) == (day(10), day(11))      # today, not next week
     assert google.range_for("25 сентября", now, TZ) == (day(25), day(26))
     assert google.range_for("когда-нибудь", now, TZ) is None
+
+
+def test_missing_scopes_are_named(monkeypatch):
+    fake = setup(monkeypatch)
+    fake.save_oauth_token(1, "google", "d@x", crypto.encrypt("rt"),
+                          scopes="https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email")
+    assert google.missing_scopes(1) == ["почта"]
+    fake.save_oauth_token(1, "google", "d@x", crypto.encrypt("rt"), scopes=" ".join(google.SCOPES))
+    assert google.missing_scopes(1) == []

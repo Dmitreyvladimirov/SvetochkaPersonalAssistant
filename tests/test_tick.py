@@ -48,8 +48,10 @@ def test_buttons_under_a_delivered_reminder(monkeypatch):
     fake, sent = setup(monkeypatch)
     reminder_tick.tick()
 
-    def tap(data):
-        bot.handle_update({"update_id": 99, "callback_query": {"id": "cb", "data": data,
+    counter = iter(range(100, 200))
+
+    def tap(data):   # every real tap is its own Telegram update
+        bot.handle_update({"update_id": next(counter), "callback_query": {"id": "cb", "data": data,
                            "message": {"message_id": 1, "chat": {"id": 111}, "text": "⏰ позвонить в банк"}}})
 
     tap("rm:snooze:2")
@@ -80,8 +82,8 @@ def test_reminder_buttons_cannot_touch_another_registered_users_row(monkeypatch)
     fake, sent = setup(monkeypatch)
     fake.add_user("222")
     rid, _ = fake.create_reminder(2, "их напоминание", datetime.now(timezone.utc), "UTC", "theirs")
-    for data in (f"rm:done:{rid}", f"rm:snooze:{rid}", f"undo:r:{rid}"):
-        bot.handle_update({"update_id": 99, "callback_query": {"id": "cb", "data": data,
+    for uid, data in enumerate((f"rm:done:{rid}", f"rm:snooze:{rid}", f"undo:r:{rid}"), start=300):
+        bot.handle_update({"update_id": uid, "callback_query": {"id": "cb", "data": data,
                            "message": {"message_id": 1, "chat": {"id": 111}, "text": "x"}}})
     assert fake.reminders[rid]["status"] == "scheduled"
     assert all("не найдено" in m[1] or "не активно" in m[1] for m in sent.messages)

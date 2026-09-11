@@ -108,9 +108,19 @@ def exchange_code(user_id: int, code: str) -> str:
     access = body["access_token"]
     status, info = _get(USERINFO_URL, headers={"Authorization": f"Bearer {access}"})
     email = (info.get("email") if status == 200 else None) or "unknown"
-    db.save_oauth_token(user_id, "google", email, crypto.encrypt(body["refresh_token"]),
-                        scopes=body.get("scope", " ".join(SCOPES)))
+    granted = body.get("scope", " ".join(SCOPES))
+    db.save_oauth_token(user_id, "google", email, crypto.encrypt(body["refresh_token"]), scopes=granted)
     return email
+
+
+def missing_scopes(user_id: int) -> list[str]:
+    """Scopes the consent screen let the user untick: named in the chat instead of
+    a later 403 (review, QA)."""
+    row = db.get_oauth_token(user_id, "google")
+    granted = set((row or {}).get("scopes", "").split())
+    names = {"https://www.googleapis.com/auth/calendar.events": "календарь",
+             "https://www.googleapis.com/auth/gmail.readonly": "почта"}
+    return [label for scope, label in names.items() if granted and scope not in granted]
 
 
 def access_token(user_id: int) -> str:

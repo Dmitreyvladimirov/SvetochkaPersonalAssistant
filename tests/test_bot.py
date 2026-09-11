@@ -263,3 +263,14 @@ def test_command_replies_stay_out_of_the_agent_history(monkeypatch):
     history = client.messages.requests[-1]["messages"]
     assert all("Подключения" not in m["content"] for m in history if isinstance(m["content"], str))
     assert history[0]["content"] == "привет"
+
+
+def test_redelivered_checkbox_tap_changes_state_once(monkeypatch):
+    fake, sent, client = wire(monkeypatch, [[("list_add", {"list_name": "Покупки", "items": ["молоко"]})], "Ок."])
+    bot.handle_update(msg("добавь в покупки молоко", update_id=1))
+    (iid,) = list(fake.list_items)
+    tap = {"update_id": 2, "callback_query": {"id": "cb", "data": f"li:{iid}",
+                                              "message": {"message_id": 1, "chat": {"id": 111}, "reply_markup": {"inline_keyboard": []}}}}
+    bot.handle_update(tap)
+    bot.handle_update(tap)                  # Telegram redelivered the same update
+    assert fake.list_items[iid]["checked_at"] is not None

@@ -26,5 +26,6 @@ def test_ordinary_subjects_are_not_trips():
                     "Hotel California lyrics", "Re: поездка в бухгалтерию за печатью"):
         assert playbooks.matching(subject) == [], subject
     for subject in ("Your boarding pass", "E-ticket LY315", "Ваш билет на рейс", "Hotel booking confirmed",
-                    "Авиабилеты Тель-Авив — Берлин", "Бронирование подтверждено"):
+                    "Авиабилеты Тель-Авив — Берлин", "Бронирование подтверждено",
+                    "אישור הזמנה - כרטיס טיסה LY315", "הטיסה שלך מחר", "כרטיסים לתל אביב"):
         assert playbooks.matching(subject) == ["trip"], subject

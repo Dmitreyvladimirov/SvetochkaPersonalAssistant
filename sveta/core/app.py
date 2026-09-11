@@ -95,8 +95,13 @@ def google_callback(state: str = "", code: str = "", error: str = ""):
         telegram.send_message("Не смогла обменять код Google на токен. Попробуй ещё раз: /connect",
                               user["telegram_chat_id"])
         return HTMLResponse("<p>Не получилось. Можно закрыть страницу.</p>", status_code=502)
-    telegram.send_message(f"Google подключён: {email}. Календарь и почта теперь доступны — "
-                          "спроси «что у меня завтра» или «найди письмо про …».", user["telegram_chat_id"])
+    missing = google.missing_scopes(user_id)
+    if missing:
+        telegram.send_message(f"Google подключён: {email}, но без доступа к: {', '.join(missing)}. "
+                              "Переподключи через /connect и отметь все галочки.", user["telegram_chat_id"])
+    else:
+        telegram.send_message(f"Google подключён: {email}. Календарь и почта теперь доступны — "
+                              "спроси «что у меня завтра» или «найди письмо про …».", user["telegram_chat_id"])
     return HTMLResponse("<p>Готово, Светочка подключена к Google. Можно закрыть страницу и вернуться в Telegram.</p>")
 
 

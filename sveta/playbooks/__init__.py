@@ -17,7 +17,8 @@ TRIGGERS = {
     "trip": re.compile(
         r"(?<![\w-])(?:билет\w*|перел[её]т\w*|рейс\w?|посадочн\w*|авиа\w*|бронировани\w*|"
         r"boarding pass|flight|itinerary|e-?ticket|booking confirmation|booking confirmed|"
-        r"hotel (?:booking|reservation|confirmation)|train ticket|check-in)(?![\w-])",
+        r"hotel (?:booking|reservation|confirmation)|train ticket|check-in|"
+        r"[הלבמ]?כרטיס\w*|[הלבמ]?טיס(?:ה|ות)|אישור הזמנה|הזמנת מלון|כרטיס עלייה למטוס)(?![\w-])",
         re.IGNORECASE),
 }
 

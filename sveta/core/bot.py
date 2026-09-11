@@ -457,6 +457,14 @@ def _handle_callback(update_id, callback: dict) -> None:
     action, _, rest = data.partition(":")
     callback_id = callback.get("id", "")
 
+    # Every state-changing tap is an update like any other (FR-3): a redelivered
+    # toggle must not flip a checkbox back, a redelivered "сделано" must not
+    # answer twice. sg:/cf:/dp:/cfa: claim their own rows below.
+    if action in ("li", "rm", "undo", "dg"):
+        if db.claim_update(update_id, scope.user_id, kind="callback", raw_text=data) is None:
+            telegram.answer_callback(callback_id)
+            return
+
     if action == "li" and rest.isdigit():
         _toggle_list_line(scope, callback_id, message, int(rest))
         return
