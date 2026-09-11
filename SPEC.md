@@ -1,11 +1,12 @@
 # Spec: Svetochka — personal assistant
 
-**Status:** accepted 2026-09-03, version 0.6. Code is written strictly against this
+**Status:** accepted 2026-09-03, version 0.7. Code is written strictly against this
 document. Version history: 0.1 (09-01) base spec · 0.2 (09-02) Turilin's approach,
 hybrid, account reading · 0.3 (09-03) agent with tools, lists, second brain ·
 0.4 (09-03) memory, persona as a variable, provider comparison · 0.5 (09-03) own
 Railway project, English-only documentation rule · 0.6 (09-03) multi-user-ready
-data model and `UserScope`.
+data model and `UserScope` · 0.7 (09-12) attachments and trip extraction, an
+optional `tz` on dated writes, the strict-schema budget.
 
 The research this spec grew out of (product, market research, tech lead / QA):
 `RESEARCH.md`. This document is the layer above it: requirements with acceptance
@@ -311,14 +312,37 @@ construction rather than by discipline, and it costs nothing in the single-user 
 | `reminder_create`, `reminder_list` | Postgres; the date is parsed **by code** inside the tool | none; the reply shows the parsed time |
 | `calendar_query` | Google, read | none |
 | `calendar_create` | Google, write | **yes, always** |
-| `mail_search` | Gmail, read; the model gets subject, sender, snippet | none |
+| `mail_search` | Gmail, read; the model gets subject, sender, snippet, attachment names | none |
 | `mail_read_body` | decrypts the body | **yes** — only on an explicit request |
+| `mail_send_attachment` | Gmail, read; the file goes to **the user's own chat**, never to the model; documents and images only | none — the model never sees the bytes and no one else can receive them (NFR-8) |
+| `mail_extract_trip` | decrypts the body **for the cheap model only**; the agent receives validated flight legs, never the text | none |
+| `notes_propose` | nothing; records a split for one-tap saving | this is FR-13 |
 | `fact_remember`, `fact_recall` | Postgres | none |
 | `preference_set`, `preference_list` | Postgres | none |
 | `suggest(actions[])` | nothing; renders buttons | this is FR-43 |
 
 Dates and times are parsed **by code inside the tool**, not by the model: the model
 passes "в четверг в 11", the tool returns ISO and a human-readable confirmation.
+`calendar_create` and `reminder_create` take an optional IANA `tz`: a flight leaves
+at the **airport's** local time, and an event or a reminder pinned to the user's own
+zone would be hours off (`sveta/core/airports.py` maps the IATA codes that appear in
+this user's mail; an unknown code falls back to the user's zone and says so on the
+card).
+
+**Two ways a tool may read an email body** (§8 is about what reaches *the agent*,
+which is what an injection can steer): `mail_read_body` shows it to the agent and is
+therefore gated behind a card; `mail_extract_trip` hands it only to
+`claude-haiku-4-5` under a fixed extraction schema and returns validated fields, so
+the agent never sees the text and the tool needs no card. Everything the extraction
+returns is coerced and range-checked before it reaches the agent or a reminder body.
+
+**A strict schema costs grammar budget.** The API compiles `strict: true` tool
+schemas into one grammar and refuses the request past a budget that shrinks as the
+tool set grows — seven strict tools at 19 tools, six at 25 (measured 2026-09-12).
+`sveta/tools/__init__.py` keeps `STRICT_TOOLS` for the tools that write something
+dated or outside; the rest keep closed schemas and validate in Python. Over the
+budget every agent call answers 400 "Schema is too complex"; the golden run is the
+alarm.
 
 **Models.** Agent — `claude-sonnet-5` with `effort: low`. Cheap path and field
 extraction from voice — `claude-haiku-4-5`. Brief — Sonnet, one call over
@@ -509,7 +533,8 @@ deduplicate before the model call (`CONTEXT.md`, entry 13).
 | Rule | Why |
 |---|---|
 | A foreign chat_id gets silence, not a refusal | a refusal confirms the bot exists |
-| An email body never reaches the model without an explicit request | `mail_search` returns subject and snippet; `mail_read_body` is behind a tap |
+| An email body never reaches the model without an explicit request | `mail_search` returns subject and snippet; `mail_read_body` is behind a tap; `mail_extract_trip` gives the body to the cheap model only and returns fields |
+| A file from an email is re-served only to its owner, and only as a document or an image | `mail_send_attachment` sends to `scope.chat_id` alone, with a type allowlist so the bot is not a delivery channel for a phishing payload |
 | Bodies and tokens — Fernet at field level | the key lives only in env; a dump without the key is inert |
 | Minimal scopes | `calendar.events` + `gmail.readonly` |
 | Secrets are never logged | a test greps the log for `token`, `refresh`, `sk-`, `Bearer` |
