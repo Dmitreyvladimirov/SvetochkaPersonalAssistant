@@ -146,8 +146,9 @@ use the MCP for `/health` and logs from there.
 - **Not done in the run, needs Dimitry (morning list):**
   1. ~~Anthropic credit balance~~ — topped up by Dimitry during the run; the
      probe passed at 07:20 UTC. FR-39 now names an empty balance in the chat.
-  2. **Golden set after stages 2–5: 96% (55/57) on `claude-sonnet-5`**, 5 min 26 s,
-     2026-09-12 07:40 UTC. Both misses are the stage-1 pair (a two-intent message
+  2. **Golden set: 97% (61/63) on `claude-sonnet-5`** after stage 3 (2026-09-12
+     10:10 UTC; 96% (55/57) after stages 2–5 at 07:40 UTC). A run costs ~$1.6 and
+     is exempt from the per-user daily limit inside the test. Both misses are the stage-1 pair (a two-intent message
      where the model does one thing). The first run after the top-up found a
      production bug: with 19 strict tools the API answers 400 "Schema is too
      complex" — the budget is seven strict tools (`sveta/tools/__init__.py`,
