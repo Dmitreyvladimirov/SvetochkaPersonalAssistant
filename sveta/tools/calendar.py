@@ -96,6 +96,9 @@ def describe(scope: UserScope, args: dict) -> str:
         return plan
     title, start, end = plan
     args["start_iso"], args["end_iso"], args["title"] = start.isoformat(), end.isoformat(), title
+    # Google wants an IANA name in timeZone; fromisoformat would give back a fixed
+    # offset, so the zone is pinned by name alongside the moment (review I12).
+    args["tz"] = str(start.tzinfo)
     zone = f" ({start.tzinfo})" if str(start.tzinfo) != scope.tz else ""
     return f"Создать событие: {title} — {timeparse.fmt(start, _local_now(scope))}–{end:%H:%M}{zone}"
 
@@ -107,6 +110,11 @@ def execute(scope: UserScope, args: dict) -> str:
         title = str(args.get("title") or "").strip() or "(без названия)"
         start = datetime.fromisoformat(args["start_iso"])
         end = datetime.fromisoformat(args["end_iso"])
+        try:
+            zone = ZoneInfo(str(args.get("tz") or scope.tz))
+            start, end = start.astimezone(zone), end.astimezone(zone)
+        except Exception:  # noqa: BLE001 — a fixed offset still creates the right moment
+            pass
     else:
         plan = _plan(scope, args)
         if isinstance(plan, str):

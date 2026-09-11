@@ -2,6 +2,7 @@
 snippet only; bodies are stored encrypted and reach the model through
 mail_read_body, which is gated behind a card (§6.2, §8). When a hit looks like a
 ticket or a booking, the trip playbook is appended to the result (FR-44)."""
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -10,6 +11,8 @@ from sveta import playbooks
 from sveta.core import airports, config, crypto, db, google, llm, telegram, timeparse
 from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import Tool
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt(m: dict, tz: str) -> str:
@@ -119,8 +122,12 @@ def _send_attachment(scope: UserScope, ctx: ToolContext, gmail_id: str, filename
         return "This message has no attachments."
     chosen = None
     if filename:
-        chosen = next((f for f in files if f["filename"].lower() == filename.lower()), None) or \
-                 next((f for f in files if filename.lower() in f["filename"].lower()), None)
+        chosen = next((f for f in files if f["filename"].lower() == filename.lower()), None)
+        if chosen is None:
+            partial = [f for f in files if filename.lower() in f["filename"].lower()]
+            if len(partial) > 1:
+                return "Which one? " + ", ".join(f["filename"] for f in partial)
+            chosen = partial[0] if partial else None
     elif len(files) == 1:
         chosen = files[0]
     if not chosen:
@@ -129,7 +136,8 @@ def _send_attachment(scope: UserScope, ctx: ToolContext, gmail_id: str, filename
         return (f"Не отправляю {chosen['filename']}: такой тип файла я в чат не пересылаю "
                 "(письмо может быть поддельным). Открой письмо в почте, если это важно.")
     try:
-        data = google.download_attachment(scope.user_id, gmail_id, chosen["attachment_id"])
+        data = google.download_attachment(scope.user_id, gmail_id, chosen["attachment_id"],
+                                          size=int(chosen.get("size") or 0))
     except google.GoogleError as e:
         return f"Error: could not download {chosen['filename']} ({e})."
     safe_name = _clean(chosen["filename"].replace("/", "_").replace("\\", "_"), 120) or "attachment"
@@ -208,7 +216,8 @@ def _extract_trip(scope: UserScope, ctx: ToolContext, gmail_id: str) -> str:
         data = _json_object(text)
     except llm.BudgetExceeded as e:
         return f"Error: daily budget exhausted ({e})."
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — the type only: an email body must never be logged
+        logger.warning("mail: trip extraction failed (%s)", type(e).__name__)
         return f"Error: extraction failed ({type(e).__name__})."
     legs = [l for l in (data or {}).get("legs") or [] if isinstance(l, dict) and l.get("date")]
     if not legs:
@@ -275,14 +284,14 @@ def _render_legs(scope: UserScope, data: dict, legs: list[dict]) -> str:
         tz = from_tz or scope.tz
         tz_note = "" if from_tz else " (зона аэропорта неизвестна, взята твоя)"
         duration = _duration_min(leg, date_raw, depart, arrive, from_tz, to_tz)
-        title = f"✈️ {flight or 'рейс'} {from_city} → {to_city}"
+        title = f"✈️ {flight or 'рейс'} {from_city} → {to_city}" + ("" if from_tz else " (зона?)")
         before = (day - timedelta(days=1)).strftime("%d.%m.%Y")
         route = f"{from_iata or '?'}→{to_iata or '?'}"
         remind = " ".join(x for x in ("завтра вылет", flight, route) if x)
         lines.append(
             f"{len(lines) + 1}. {title}: {day:%d.%m.%Y} {depart}–{arrive or '?'} local{tz_note}\n"
             f"   calendar_create(title=\"{title}\", when=\"{day:%d.%m.%Y} в {depart}\", duration_min={duration}, tz=\"{tz}\")\n"
-            f"   reminder_create(text=\"{remind}\", when=\"{before} в 09:00\")")
+            f"   reminder_create(text=\"{remind}\", when=\"{before} в 09:00\", tz=\"{tz}\")")
     if not lines:
         return "No flights could be read from this message (dates unreadable). Say so honestly."
     raw_pnr = data.get("pnr")
@@ -313,7 +322,9 @@ def _duration_min(leg: dict, date_raw: str, depart: str, arrive: str,
         start = start.replace(tzinfo=ZoneInfo(from_tz))
         end = end.replace(tzinfo=ZoneInfo(to_tz))
     minutes = int((end - start).total_seconds() // 60)
-    if minutes <= 0:
+    if minutes == 0:
+        return 180                      # 10:00 to 10:00 is a missing arrival, not a day-long flight
+    if minutes < 0:
         minutes += 24 * 60
     return max(30, min(minutes, 20 * 60))
 

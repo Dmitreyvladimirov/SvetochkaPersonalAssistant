@@ -23,6 +23,9 @@ from sveta.tools import REGISTRY, UnknownTool, definitions, run as run_tool
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 8
+# The keyboard shows this many confirmation cards; a batch must never run an
+# action the user never saw (review).
+MAX_PENDING = 8
 _PERSONA = Path(__file__).resolve().parents[1] / "playbooks" / "persona.md"
 
 
@@ -145,6 +148,11 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
                     results.append(_tool_result(tu.id, label, True))
                     continue
                 import uuid
+                if len(ctx.pending) >= MAX_PENDING:
+                    results.append(_tool_result(
+                        tu.id, f"Error: already {MAX_PENDING} actions are waiting for the user's tap; "
+                               "tell them to confirm those first.", True))
+                    continue
                 ctx.pending.append({"kind": "confirm", "pid": uuid.uuid4().hex[:12], "tool": tu.name,
                                     "args": args, "label": label})
                 results.append(_tool_result(

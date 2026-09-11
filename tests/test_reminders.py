@@ -21,9 +21,9 @@ def test_create_parses_the_phrase_and_echoes_local_time(monkeypatch):
     fake = install(monkeypatch)
     freeze(monkeypatch)
     ctx = ToolContext(inbox_item_id=3)
-    out = run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "в четверг в 11"})
+    out = run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "в четверг в 11", "tz": ""})
     assert out.startswith("Created reminder #")
-    assert "сегодня в 11:00" in out and "Asia/Jerusalem" in out
+    assert "сегодня в 11:00" in out
     row = list(fake.reminders.values())[0]
     assert row["fire_at"].astimezone(timezone.utc) == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
     assert row["text"] == "позвонить в банк" and ctx.created_reminder_ids == [row["id"]]
@@ -32,7 +32,7 @@ def test_create_parses_the_phrase_and_echoes_local_time(monkeypatch):
 def test_past_is_refused_and_nothing_created(monkeypatch):
     fake = install(monkeypatch)
     freeze(monkeypatch)
-    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "x", "when": "сегодня в 9"})
+    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "x", "when": "сегодня в 9", "tz": ""})
     assert out.startswith("Error") and "past" in out
     assert fake.reminders == {}
 
@@ -40,7 +40,7 @@ def test_past_is_refused_and_nothing_created(monkeypatch):
 def test_unparseable_time_asks_to_rephrase(monkeypatch):
     fake = install(monkeypatch)
     freeze(monkeypatch)
-    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "x", "when": "когда-нибудь"})
+    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "x", "when": "когда-нибудь", "tz": ""})
     assert out.startswith("Error: could not understand")
     assert fake.reminders == {}
 
@@ -49,8 +49,8 @@ def test_duplicate_is_reported_not_doubled(monkeypatch):
     fake = install(monkeypatch)
     freeze(monkeypatch)
     ctx = ToolContext()
-    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "Позвонить в банк", "when": "завтра в 11"})
-    out = run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "завтра в 11:00"})
+    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "Позвонить в банк", "when": "завтра в 11", "tz": ""})
+    out = run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "завтра в 11:00", "tz": ""})
     assert out.startswith("Already exists")
     assert len(fake.reminders) == 1 and len(ctx.created_reminder_ids) == 1
 
@@ -59,8 +59,8 @@ def test_list_and_cancel(monkeypatch):
     install(monkeypatch)
     freeze(monkeypatch)
     ctx = ToolContext()
-    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "б", "when": "завтра в 11"})
-    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "а", "when": "через час"})
+    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "б", "when": "завтра в 11", "tz": ""})
+    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "а", "when": "через час", "tz": ""})
     out = run(REGISTRY, "reminder_list", scope(), ctx, {})
     assert out.startswith("2 scheduled") and out.index(": а") < out.index(": б")
     rid = ctx.created_reminder_ids[0]
@@ -73,7 +73,7 @@ def test_reminders_never_cross_users(monkeypatch):
     install(monkeypatch)
     freeze(monkeypatch)
     ctx = ToolContext()
-    run(REGISTRY, "reminder_create", scope(1), ctx, {"text": "secret", "when": "завтра в 11"})
+    run(REGISTRY, "reminder_create", scope(1), ctx, {"text": "secret", "when": "завтра в 11", "tz": ""})
     rid = ctx.created_reminder_ids[0]
     assert run(REGISTRY, "reminder_list", scope(2), ToolContext(), {}) == "No scheduled reminders."
     assert run(REGISTRY, "reminder_cancel", scope(2), ToolContext(), {"reminder_id": rid}).startswith("Error")
@@ -86,9 +86,24 @@ def test_cancelled_reminder_can_be_recreated(monkeypatch):
     fake = install(monkeypatch)
     freeze(monkeypatch)
     ctx = ToolContext()
-    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "завтра в 11"})
+    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "завтра в 11", "tz": ""})
     rid = ctx.created_reminder_ids[0]
     run(REGISTRY, "reminder_cancel", scope(), ctx, {"reminder_id": rid})
-    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "позвонить в банк", "when": "завтра в 11"})
+    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "позвонить в банк", "when": "завтра в 11", "tz": ""})
     assert out.startswith("Created reminder #")
     assert fake.reminders[rid]["status"] == "scheduled" and len(fake.reminders) == 1
+
+
+def test_a_reminder_in_another_zone_fires_there(monkeypatch):
+    """Review I9: '09:00 in Bogotá' must not fire at 09:00 Jerusalem."""
+    fake = install(monkeypatch)
+    freeze(monkeypatch)
+    ctx = ToolContext()
+    out = run(REGISTRY, "reminder_create", scope(), ctx,
+              {"text": "завтра вылет UX0092", "when": "03.10.2026 в 09:00", "tz": "America/Bogota"})
+    assert out.startswith("Created reminder #") and "America/Bogota" in out
+    row = fake.reminders[ctx.created_reminder_ids[0]]
+    assert row["tz"] == "America/Bogota"
+    assert row["fire_at"].astimezone(timezone.utc).hour == 14      # 09:00 UTC-5
+    assert run(REGISTRY, "reminder_create", scope(), ToolContext(),
+               {"text": "x", "when": "завтра в 9", "tz": "Mars/Olympus"}).startswith("Error: unknown time zone")

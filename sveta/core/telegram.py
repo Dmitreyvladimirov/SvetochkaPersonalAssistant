@@ -48,8 +48,8 @@ def send_document(chat_id, filename: str, data: bytes, caption: str = "") -> int
         if result is None:
             logger.error("telegram: sendDocument failed: HTTP %s", r.status_code)
         return (result or {}).get("message_id")
-    except Exception as e:  # noqa: BLE001
-        logger.error("telegram: sendDocument failed: %s", e)
+    except Exception as e:  # noqa: BLE001 — the type only: the URL carries the bot token
+        logger.error("telegram: sendDocument failed: %s", type(e).__name__)
         return None
 
 

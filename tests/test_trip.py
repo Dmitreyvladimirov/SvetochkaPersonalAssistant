@@ -70,7 +70,7 @@ def test_send_attachment_goes_to_the_chat_not_the_model(monkeypatch):
     monkeypatch.setattr(google, "message_attachments", lambda uid, gid: [
         {"filename": "eticket_7PVOQO.pdf", "mime": "application/pdf", "size": 15, "attachment_id": "att-1"},
         {"filename": "invoice.pdf", "mime": "application/pdf", "size": 9, "attachment_id": "att-2"}])
-    monkeypatch.setattr(google, "download_attachment", lambda uid, gid, aid: b"%PDF-1.4 " + aid.encode())
+    monkeypatch.setattr(google, "download_attachment", lambda uid, gid, aid, size=0: b"%PDF-1.4 " + aid.encode())
     sent = []
     monkeypatch.setattr(telegram, "send_document", lambda chat_id, filename, data, caption="": sent.append((chat_id, filename, data, caption)) or 77)
     out = run(REGISTRY, "mail_send_attachment", scope(), ToolContext(), {"gmail_id": "m2", "filename": ""})
@@ -105,7 +105,8 @@ def test_extract_trip_returns_structure_with_verbatim_phrases(monkeypatch):
     assert 'calendar_create(title="✈️ UX1301 Тель-Авив → Мадрид", when="20.09.2026 в 07:40", duration_min=315, tz="Asia/Jerusalem")' in out
     assert 'calendar_create(title="✈️ UX0091 Мадрид → Богота", when="20.09.2026 в 16:05", duration_min=645, tz="Europe/Madrid")' in out
     assert 'calendar_create(title="✈️ UX0092 Богота → Мадрид", when="04.10.2026 в 21:50", duration_min=575, tz="America/Bogota")' in out
-    assert 'reminder_create(text="завтра вылет UX1301 TLV→MAD", when="19.09.2026 в 09:00")' in out
+    assert 'reminder_create(text="завтра вылет UX1301 TLV→MAD", when="19.09.2026 в 09:00", tz="Asia/Jerusalem")' in out
+    assert 'when="03.10.2026 в 09:00", tz="America/Bogota"' in out      # the return leg reminds in Bogotá time
     assert fake.llm_calls[-1]["purpose"] == "extract"
     assert run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "nope"}).startswith("Error: unknown")
 
@@ -209,7 +210,7 @@ def test_dangerous_attachment_types_are_refused(monkeypatch):
     monkeypatch.setattr(google, "message_attachments", lambda uid, gid: [
         {"filename": "invoice.exe", "mime": "application/x-msdownload", "size": 9, "attachment_id": "a1"},
         {"filename": "../../etc/passwd.pdf", "mime": "application/pdf", "size": 9, "attachment_id": "a2"}])
-    monkeypatch.setattr(google, "download_attachment", lambda uid, gid, aid: b"x")
+    monkeypatch.setattr(google, "download_attachment", lambda uid, gid, aid, size=0: b"x")
     sent = []
     monkeypatch.setattr(telegram, "send_document", lambda chat_id, filename, data, caption="": sent.append(filename) or 1)
     assert "не пересылаю" in run(REGISTRY, "mail_send_attachment", scope(), ToolContext(), {"gmail_id": "m", "filename": "invoice.exe"})
@@ -257,3 +258,39 @@ def test_batch_button_only_for_calendar_and_summarises(monkeypatch):
     bot.handle_update({"update_id": 5, "callback_query": {"id": "cb", "data": f"cfa:{item2}",
                        "message": {"message_id": 1, "chat": {"id": 111}}}})
     assert sent2.messages[-1][1] == "Всё уже было сделано раньше."
+
+
+def test_unknown_airport_zone_is_visible_on_the_card(monkeypatch):
+    """Review I10: the fallback to the user's zone must reach the confirmation card."""
+    fake = install(monkeypatch)
+    fake.save_mail_messages(1, [{"gmail_id": "m5", "subject": "T", "sender": "x",
+                                 "body_enc": crypto.encrypt("x"), "received_at": NOW}])
+    payload = {"pnr": None, "legs": [{"flight": "ZZ100", "from_iata": "QQQ", "to_iata": "MAD",
+                                      "from_city": "Кукуево", "to_city": "Мадрид",
+                                      "date": "2026-09-20", "depart": "07:40", "arrive": "11:55"}]}
+
+    class Haiku:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))],
+                                       usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    out = run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "m5"})
+    assert "зона аэропорта неизвестна" in out
+    assert 'title="✈️ ZZ100 Кукуево → Мадрид (зона?)"' in out       # the card carries the doubt
+
+
+def test_pinned_event_keeps_the_iana_zone(monkeypatch):
+    """Review I12: Google wants an IANA name, not a fixed offset."""
+    fake = install(monkeypatch)
+    connect(fake, monkeypatch)
+    args = {"title": "✈️ UX0091", "when": "20.09.2026 в 16:05", "duration_min": 645,
+            "description": "", "tz": "Europe/Madrid"}
+    calendar_tool.describe(scope(), args)
+    assert args["tz"] == "Europe/Madrid"
+    seen = {}
+    monkeypatch.setattr(google, "create_event",
+                        lambda uid, title, start, end, description="": seen.update(start=start, end=end) or {"id": "e", "link": ""})
+    calendar_tool.execute(scope(), args)
+    assert str(seen["start"].tzinfo) == "Europe/Madrid" and seen["start"].hour == 16

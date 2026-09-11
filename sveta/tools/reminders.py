@@ -14,30 +14,38 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _create(scope: UserScope, ctx: ToolContext, text: str, when: str) -> str:
+def _create(scope: UserScope, ctx: ToolContext, text: str, when: str, tz: str = "") -> str:
     text, when = " ".join((text or "").split()), (when or "").strip()
     if not text:
         return "Error: text is empty — what should the reminder say?"
     if not when:
         return "Error: when is empty — ask the user for a time."
+    # A reminder about a flight from Bogotá at 09:00 means 09:00 *there* (§6.1).
+    zone = (tz or "").strip() or scope.tz
+    try:
+        ZoneInfo(zone)
+    except Exception:  # noqa: BLE001
+        return f"Error: unknown time zone {tz!r}; pass an IANA name like America/Bogota or empty string."
     now = _now()
-    fire_at = timeparse.parse(when, now=now, tz=scope.tz)
+    fire_at = timeparse.parse(when, now=now, tz=zone)
     if fire_at is None:
         return (f"Error: could not understand the time {when!r}. Ask the user to say it "
                 "differently (e.g. 'завтра в 11', 'через 20 минут', 'в четверг вечером').")
     local_now = now.astimezone(ZoneInfo(scope.tz))
-    if fire_at <= local_now:
-        return (f"Error: {timeparse.fmt(fire_at, local_now)} is already in the past "
-                f"(now is {local_now:%H:%M}); nothing created. Tell the user.")
+    if fire_at <= now.astimezone(ZoneInfo(zone)):
+        return (f"Error: {timeparse.fmt(fire_at)} is already in the past "
+                f"(now is {local_now:%H:%M} for you); nothing created. Tell the user.")
     dedup_key = f"{text.lower()}|{fire_at.astimezone(timezone.utc):%Y-%m-%dT%H:%M}"
-    reminder_id, created = db.create_reminder(scope.user_id, text, fire_at, scope.tz, dedup_key,
+    reminder_id, created = db.create_reminder(scope.user_id, text, fire_at, zone, dedup_key,
                                               inbox_item_id=ctx.inbox_item_id)
-    label = timeparse.fmt(fire_at, local_now)
+    label = timeparse.fmt(fire_at.astimezone(ZoneInfo(scope.tz)), local_now)
+    if zone != scope.tz:
+        label += f" по-твоему ({timeparse.fmt(fire_at)} в {zone})"
     if not created:
         return (f"Already exists: reminder #{reminder_id} '{text}' at {label}. "
                 "Do not create another; tell the user it is already set.")
     ctx.created_reminder_ids.append(reminder_id)
-    return f"Created reminder #{reminder_id}: '{text}' at {label} ({scope.tz}). Repeat this time in the reply."
+    return f"Created reminder #{reminder_id}: '{text}' at {label}. Repeat this time in the reply."
 
 
 REMINDER_CREATE = Tool(
@@ -51,6 +59,7 @@ REMINDER_CREATE = Tool(
         "properties": {
             "text": {"type": "string", "description": "What to remind about, in the user's words, without the time."},
             "when": {"type": "string", "description": "The time phrase exactly as the user said it."},
+            "tz": {"type": "string", "description": "IANA time zone when the time is not the user's own (a flight abroad: mail_extract_trip gives it), else empty string."},
         },
     },
     fn=_create,

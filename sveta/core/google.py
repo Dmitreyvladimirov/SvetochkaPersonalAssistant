@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import logging
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from sveta.core import config, crypto, db, oauth_state
 
@@ -275,16 +275,18 @@ def message_attachments(user_id: int, gmail_id: str) -> list[dict]:
     """The attachment list of one message, fetched fresh (nothing about
     attachments is stored)."""
     token = access_token(user_id)
-    status, msg = _get(f"{GMAIL_URL}/messages/{gmail_id}", params={"format": "full"},
+    status, msg = _get(f"{GMAIL_URL}/messages/{quote(gmail_id, safe='')}", params={"format": "full"},
                        headers={"Authorization": f"Bearer {token}"})
     if status != 200:
         raise GoogleError(f"gmail get: HTTP {status}")
     return _attachments(msg.get("payload") or {})
 
 
-def download_attachment(user_id: int, gmail_id: str, attachment_id: str) -> bytes:
+def download_attachment(user_id: int, gmail_id: str, attachment_id: str, *, size: int = 0) -> bytes:
+    if size and size > MAX_ATTACHMENT_BYTES:
+        raise GoogleError(f"attachment too large ({size // 1024 // 1024} MB)")
     token = access_token(user_id)
-    status, body = _get(f"{GMAIL_URL}/messages/{gmail_id}/attachments/{attachment_id}",
+    status, body = _get(f"{GMAIL_URL}/messages/{quote(gmail_id, safe='')}/attachments/{quote(attachment_id, safe='')}",
                         headers={"Authorization": f"Bearer {token}"})
     if status != 200 or not body.get("data"):
         raise GoogleError(f"gmail attachment: HTTP {status}")
