@@ -31,14 +31,19 @@ Working notes for Claude Code sessions on Svetochka.
 
 - Railway project `svetochka` (own workspace project, created 2026-09-03):
   service `sveta-web` (webhook + agent + reminder tick); `digest` and `ingest`
-  cron services come in stage 4. Postgres in the same project;
+  cron services since stage 4 (2026-09-12). Postgres in the same project;
   `DATABASE_URL` is `${{Postgres.DATABASE_URL}}`.
 - Railway ids (for the Railway MCP / CLI; not secrets):
   workspace `7e4d263c-df13-4b2b-9a17-5ce022a8643d`,
   project `28e32030-e8fc-4fa2-8d1d-c18a30f22720`,
   environment `production` `8d1e8981-1b3f-4c36-b75e-bc8320d5bb37`,
   service `sveta-web` `0ff001e5-0635-410c-b580-09c622554050`,
-  service `Postgres` `4a33d3c8-631c-48ff-9763-ac4317b66ef8`.
+  service `Postgres` `4a33d3c8-631c-48ff-9763-ac4317b66ef8`,
+  cron service `digest` `e422f9c8-015d-45e5-af1c-104527387da0` (`*/15 * * * *`,
+  `SERVICE_TYPE=digest`, variables as references to `sveta-web` and `Postgres`),
+  cron service `ingest` `7426adc2-d2f7-46c7-9ea6-34a6ec60453f` (`0 */3 * * *`,
+  `SERVICE_TYPE=ingest`). Created 2026-09-12; deploy settings (healthcheck, cron,
+  start command) live on the services — Railway config files are deprecated.
   Public domain: `sveta-web-production.up.railway.app`; webhook path `/tg/webhook`.
 - Deploy is `bash run.sh`, role chosen by `SERVICE_TYPE` (see `SPEC.md` §7).
   Pushing to `main` deploys; `railway.toml` sets the healthcheck to `/health`.
@@ -131,10 +136,10 @@ use the MCP for `/health` and logs from there.
      changed. Run it first thing:
      `SVETA_GOLDEN=1 ANTHROPIC_API_KEY=… .venv/bin/python -m pytest -m golden -q -s`.
      Below 90% → revert the persona lines of stages 2/5 and report.
-  3. **Railway cron services** `digest` (`*/15 * * * *`) and `ingest`
-     (`0 */3 * * *`) from the same repo with `SERVICE_TYPE` set and the same
-     variables as `sveta-web` (variable references `${{sveta-web.X}}` work). Created
-     via the Railway MCP if permitted during the run — see the morning report.
+  3. Railway cron services `digest` and `ingest` were created during the run (ids
+     above). Check their first deploy logs in the morning: `digest` logs
+     "nothing due" or one line per user; `ingest` logs "0 source(s) polled" until
+     feeds are added with `/rss add`.
   4. Manual acceptance (SPEC.md §14 item 3): one voice note, one "напомни …", one
      "добавь в покупки …", one link with a comment, one three-thought dump,
      "запомни, что …", `/rss add <feed>`.
