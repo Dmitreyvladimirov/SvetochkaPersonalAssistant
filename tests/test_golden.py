@@ -65,6 +65,17 @@ def test_the_golden_world_answers_the_tools(monkeypatch):
     assert "Созвон с Костей" in events
 
 
+# Errors that make every remaining scenario meaningless: the run stops on these
+# rather than reporting 60 identical failures or losing what it already paid for.
+TERMINAL = ("usage limits", "credit balance", "invalid x-api-key", "authentication_error",
+            "permission_error", "not_found_error")
+
+
+def _is_terminal(e: Exception) -> bool:
+    text = str(e).lower()
+    return any(marker in text for marker in TERMINAL)
+
+
 def _check(scenario: dict, calls: list[tuple[str, dict]], reply: str = "") -> list[str]:
     """Tool choice *and* what was said: a reply can offer the wrong ticket or hand
     the searching back to the user while calling exactly the right tools."""
@@ -117,12 +128,43 @@ def test_golden_set(monkeypatch):
     client = llm.client()
     scope = UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem")
     failures = []
+    ran = 0
+    stopped = ""
     for s in SCENARIOS:
-        r = agent.run(scope, s["message"], client=client, purpose="golden")
+        try:
+            r = agent.run(scope, s["message"], client=client, purpose="golden")
+        except Exception as e:  # noqa: BLE001
+            # A run costs real money scenario by scenario. An exhausted key or a
+            # revoked one used to raise out of the loop and throw away every
+            # scenario already paid for; now the run stops and still reports.
+            if _is_terminal(e):
+                stopped = f"{type(e).__name__}: {str(e)[:200]}"
+                break
+            failures.append((s["message"], [f"raised {type(e).__name__}: {str(e)[:120]}"], []))
+            ran += 1
+            continue
+        ran += 1
         misses = _check(s, r.tool_calls, r.reply)
         if misses:
             failures.append((s["message"], misses, [n for n, _ in r.tool_calls]))
-    score = 1 - len(failures) / len(SCENARIOS)
+        print(f"{'x' if misses else '.'}", end="", flush=True)
     report = "\n".join(f"- {m!r}: {why} (called {called})" for m, why, called in failures)
-    print(f"\nGolden: {score:.0%} ({len(SCENARIOS) - len(failures)}/{len(SCENARIOS)}) on {config.AGENT_MODEL}\n{report}")
+    if stopped:
+        print(f"\nGolden stopped after {ran}/{len(SCENARIOS)} scenarios: {stopped}\n{report}")
+        pytest.fail(f"the credential gave out after {ran}/{len(SCENARIOS)} scenarios — "
+                    f"nothing is proven about the rest.\n{stopped}\n{report}")
+    score = 1 - len(failures) / ran
+    print(f"\nGolden: {score:.0%} ({ran - len(failures)}/{ran}) on {config.AGENT_MODEL}\n{report}")
     assert score >= THRESHOLD, f"golden {score:.0%} < {THRESHOLD:.0%}\n{report}"
+
+
+def test_a_dead_credential_is_recognised_before_the_run_burns_more():
+    """The exact message the Anthropic API returns when a workspace's spend cap is
+    reached (seen 2026-09-11). A run that keeps going past this pays nothing and
+    proves nothing."""
+    assert _is_terminal(Exception(
+        "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'You have reached your specified API usage limits. "
+        "You will regain access on 2026-10-01 at 00:00 UTC.'}}"))
+    assert _is_terminal(Exception("401 authentication_error: invalid x-api-key"))
+    assert not _is_terminal(Exception("500 overloaded_error"))
