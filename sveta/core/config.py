@@ -82,10 +82,14 @@ TZ = _env("SVETA_TZ", default="Asia/Jerusalem")
 MAX_VOICE_SECONDS = int(_env("SVETA_MAX_VOICE_SECONDS", default="600"))
 MAX_MESSAGE_CHARS = 4000
 
+# The reminder tick period inside the web process (FR-20: delivery within a
+# minute). 0 disables the thread — tests, and any role that must not send.
+TICK_SECONDS = int(_env("SVETA_TICK_SECONDS", default="20"))
+
 # --- Startup -----------------------------------------------------------------
 
-# (canonical name, accepted aliases). Only what stage 0 and 1 actually need: the
-# OpenAI key is required from stage 2 (voice), Google and Notion from stage 3.
+# (canonical name, accepted aliases). What the deployed stages need: the OpenAI
+# key since stage 2 (voice); Google and Notion arrive with stages 3 and 5.
 REQUIRED: tuple[tuple[str, ...], ...] = (
     ("SVETA_TELEGRAM_TOKEN", "sveta_telegram_token"),
     ("SVETA_ALLOWED_CHAT_IDS",),
@@ -93,6 +97,7 @@ REQUIRED: tuple[tuple[str, ...], ...] = (
     ("SVETA_TOKEN_KEY",),
     ("DATABASE_URL",),
     ("ANTHROPIC_API_KEY", "sveta_anthropic"),
+    ("OPENAI_API_KEY", "sveta_openai_api"),
 )
 
 

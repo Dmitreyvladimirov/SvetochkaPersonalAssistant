@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from sveta.core import bot, config, db, telegram
+from sveta.jobs import reminder_tick
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -42,6 +43,7 @@ async def _lifespan(_app: FastAPI):
     db.init_db()
     db.seed_users(config.ALLOWED_CHAT_IDS, config.TZ)
     _register_webhook()
+    reminder_tick.start()
     yield
 
 
@@ -65,7 +67,9 @@ def health():
     except Exception as e:  # noqa: BLE001 — anything here means "not healthy"
         logger.error("health: database check failed: %s", e)
         return JSONResponse({"ok": False, "commit": commit, "db": {"ok": False}}, status_code=503)
-    return {"ok": True, "commit": commit, "db": database}
+    # tick_alive is informational: a stuck tick must not fail the healthcheck and
+    # roll a deployment back — reminders late beats the webhook down.
+    return {"ok": True, "commit": commit, "db": database, "tick_alive": reminder_tick.alive()}
 
 
 @app.post(WEBHOOK_PATH)

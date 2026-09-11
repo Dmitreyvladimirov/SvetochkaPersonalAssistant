@@ -40,8 +40,28 @@ _WEEKDAY = re.compile(r"(?:^|\s)(?:в|во)\s+(" + "|".join(WEEKDAYS) + r")")
 _DAYPART = re.compile(r"(?:^|\s)(утром|днем|вечером|ночью)(?=\s|$|[,.!?])")
 
 
+_UNITS = {"один": 1, "одну": 1, "одна": 1, "два": 2, "две": 2, "три": 3, "четыре": 4,
+          "пять": 5, "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10,
+          "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14,
+          "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18,
+          "девятнадцать": 19}
+_TENS = {"двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50}
+_NUMBER_WORDS = re.compile(
+    r"\b(?:(" + "|".join(_TENS) + r")(?:\s+(" + "|".join(_UNITS) + r"))?|(" + "|".join(_UNITS) + r"))\b")
+
+
+def _words_to_digits(text: str) -> str:
+    """'в девять', 'через двадцать пять минут' — transcripts and people both spell
+    numbers out. 'час' alone ('через час') is handled by the relative pattern."""
+    def repl(m):
+        if m.group(1):
+            return str(_TENS[m.group(1)] + (_UNITS[m.group(2)] if m.group(2) else 0))
+        return str(_UNITS[m.group(3)])
+    return _NUMBER_WORDS.sub(repl, text)
+
+
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s.lower().replace("ё", "е")).strip()
+    return _words_to_digits(re.sub(r"\s+", " ", s.lower().replace("ё", "е")).strip())
 
 
 def parse(phrase: str, *, now: datetime, tz: str) -> datetime | None:

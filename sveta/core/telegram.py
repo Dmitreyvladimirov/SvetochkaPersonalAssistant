@@ -36,6 +36,12 @@ def edit_message(message_id: int, text: str, chat_id, reply_markup: dict | None 
     _call("editMessageText", body)
 
 
+def edit_reply_markup(message_id: int, chat_id, reply_markup: dict | None) -> None:
+    """Swap only the buttons under a message — what a checkbox tap does (FR-49)."""
+    _call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
+                                     "reply_markup": reply_markup or {"inline_keyboard": []}})
+
+
 def answer_callback(callback_id: str, text: str = "") -> None:
     """Stop the spinner on a tapped button; without it the button looks broken."""
     _call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})

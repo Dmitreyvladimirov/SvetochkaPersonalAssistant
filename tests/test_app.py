@@ -17,7 +17,9 @@ def test_health_is_200_with_commit_when_db_answers(monkeypatch):
     with _client(monkeypatch, lambda: {"ok": True, "users": 1}) as client:
         r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "commit": "abcdef123456", "db": {"ok": True, "users": 1}}
+    body = r.json()
+    assert body["ok"] is True and body["commit"] == "abcdef123456"
+    assert body["db"] == {"ok": True, "users": 1} and body["tick_alive"] is False
 
 
 def test_health_is_503_when_db_is_down(monkeypatch):

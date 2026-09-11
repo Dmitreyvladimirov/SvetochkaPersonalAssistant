@@ -63,7 +63,10 @@ def _check(scenario: dict, calls: list[tuple[str, dict]]) -> list[str]:
 @pytest.mark.skipif(not os.environ.get("SVETA_GOLDEN"), reason="set SVETA_GOLDEN=1 to spend money")
 def test_golden_set(monkeypatch):
     install(monkeypatch)
-    from sveta.core import llm
+    from sveta.core import fetch, llm
+    # The golden set measures tool choice, not the network: every URL "opens".
+    monkeypatch.setattr(fetch, "get", lambda url: fetch.FetchResult(url=url, final_url=url, status=200,
+                                                                    title="Page", summary="Summary."))
     client = llm.client()
     scope = UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem")
     failures = []
