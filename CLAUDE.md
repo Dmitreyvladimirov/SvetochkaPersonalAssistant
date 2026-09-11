@@ -182,5 +182,34 @@ use the MCP for `/health` and logs from there.
      "запомни, что …", `/rss add <feed>`.
 - The Telegram webhook registers itself on startup from `RAILWAY_PUBLIC_DOMAIN` +
   `SVETA_WEBHOOK_SECRET` (`app._register_webhook`); nobody pastes the bot token.
+- **Photos and documents from the chat (2026-09-12, FR-59…61, spec v0.8):** a file
+  is downloaded from Telegram once, read by the cheap model as an image or a PDF
+  document block (`sveta/core/files.py`), and its text becomes the incoming item;
+  the bytes are never stored, the `file_id` is enough to send it back.
+- **Competence work (2026-09-12), after three live misses Dimitry reported** — a
+  Budapest search answered with a 2023 London ticket, a party ticket not found,
+  and a list of airlines handed back for him to choose from. Two causes, both
+  fixed: `mail_search` was one free-text query with no way to broaden, so it now
+  plans Gmail queries with the cheap model and climbs them precise → broad, marks
+  hits that match none of the key terms as "probably NOT what was asked for", and
+  reports what it tried (`sveta/tools/mail.py`); and `playbooks/persona.md` said
+  "be honest when you find nothing" without ever saying "try harder first".
+  Findings: `docs/research/2026-09-12-competence.md`.
+- **The golden harness measured less than it looked like it did.** It had no
+  connected Google, so every mail and calendar scenario answered "не подключён"
+  before reaching any query logic, and `_check` never looked at the reply text.
+  Both live failures were unprovable in 65 scenarios by construction.
+  `tests/golden/world.py` now seeds a connected account with a deliberately
+  awkward mailbox (the Colombia ticket never says "Colombia", the party ticket is
+  in Hebrew, a 2023 London ticket sits there to be mistaken), scenarios carry
+  `expect_reply` / `forbid_reply`, and `tests/test_mail.py` replays the three live
+  misses against that same mailbox for free.
+- **Open: the golden set cannot be run.** The Anthropic key hit its workspace
+  spend cap on 2026-09-11 mid-run ("You have reached your specified API usage
+  limits. You will regain access on 2026-10-01 at 00:00 UTC"), so the 75-scenario
+  set has never run against the seeded world. Raise the cap in the Anthropic
+  Console (Settings → Limits, the workspace the key belongs to) or wait for
+  2026-10-01, then `SVETA_GOLDEN=1 pytest -m golden -q`. The run now stops on a
+  dead credential and reports the scenarios it already paid for.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model. 229 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model. 315 tests.
