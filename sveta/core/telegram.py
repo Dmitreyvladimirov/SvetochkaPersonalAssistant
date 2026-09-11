@@ -36,14 +36,19 @@ def edit_message(message_id: int, text: str, chat_id, reply_markup: dict | None 
     _call("editMessageText", body)
 
 
-def send_document(chat_id, filename: str, data: bytes, caption: str = "") -> int | None:
-    """A file into the user's own chat (a ticket PDF from mail). Multipart, so
-    httpx rather than the urllib JSON helper. Returns the message_id or None."""
+def send_document(chat_id, filename: str, data: bytes | str, caption: str = "") -> int | None:
+    """A file into the user's own chat: bytes to upload (a ticket PDF from mail),
+    or a Telegram file_id string to re-send something Telegram already holds
+    (FR-61), which costs no upload. Returns the message_id or None."""
     try:
         import httpx
-        r = httpx.post(f"{_api()}/sendDocument",
-                       data={"chat_id": str(chat_id), "caption": caption[:1000]},
-                       files={"document": (filename, data)}, timeout=60.0)
+        body = {"chat_id": str(chat_id), "caption": caption[:1000]}
+        if isinstance(data, str):
+            body["document"] = data
+            r = httpx.post(f"{_api()}/sendDocument", data=body, timeout=60.0)
+        else:
+            r = httpx.post(f"{_api()}/sendDocument", data=body,
+                           files={"document": (filename, data)}, timeout=60.0)
         result = r.json().get("result") if r.status_code == 200 else None
         if result is None:
             logger.error("telegram: sendDocument failed: HTTP %s", r.status_code)

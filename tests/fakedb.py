@@ -46,7 +46,7 @@ class FakeDB:
 
     # inbox
     def claim_update(self, update_id, user_id, *, message_id=None, kind="text", raw_text=None,
-                     file_id=None, duration_sec=None):
+                     file_id=None, duration_sec=None, file_name=None, file_mime=None):
         if update_id is not None:
             if update_id in self._update_ids:
                 return None
@@ -55,7 +55,8 @@ class FakeDB:
         self.inbox[iid] = {"id": iid, "user_id": user_id, "tg_update_id": update_id, "kind": kind,
                            "raw_text": raw_text, "status": "new", "reply_text": None,
                            "suggestions": None, "error": None,
-                           "received_at": datetime.now(timezone.utc)}
+                           "received_at": datetime.now(timezone.utc),
+                           "file_id": file_id, "file_name": file_name, "file_mime": file_mime}
         return iid
 
     def mark_item(self, item_id, *, status, error=None, reply_text=None, suggestions=None):
@@ -96,7 +97,7 @@ class FakeDB:
         self.notes[nid] = {"id": nid, "user_id": user_id, "title": title, "body": body,
                            "tags": tags or [], "project": project, "source": source,
                            "source_ref": source_ref, "created_at": datetime.now(timezone.utc),
-                           "deleted_at": None}
+                           "inbox_item_id": inbox_item_id, "deleted_at": None}
         return nid
 
     def search_notes(self, user_id, query, *, limit=5, source=None):
@@ -112,6 +113,19 @@ class FakeDB:
                if r["user_id"] == user_id and r["deleted_at"] is None
                and (project is None or r["project"] == project)]
         return list(reversed(out))[:limit]
+
+    def note_file(self, user_id, note_id):
+        note = self.notes.get(note_id)
+        if not note or note["user_id"] != user_id:
+            return None
+        item = self.inbox.get(note.get("inbox_item_id"))
+        if not item or not item.get("file_id"):
+            return None
+        return {"file_id": item["file_id"], "file_name": item.get("file_name"),
+                "file_mime": item.get("file_mime"), "kind": item["kind"]}
+
+    def notes_with_files(self, user_id, note_ids):
+        return {n for n in note_ids if self.note_file(user_id, n)}
 
     def get_note(self, user_id, note_id):
         r = self.notes.get(note_id)

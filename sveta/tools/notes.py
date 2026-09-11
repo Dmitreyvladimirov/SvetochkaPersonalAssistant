@@ -56,14 +56,17 @@ NOTE_SAVE = Tool(
 )
 
 
-def _fmt(rows: list[dict]) -> str:
+def _fmt(rows: list[dict], user_id: int | None = None) -> str:
+    from sveta.core import db as _db
+    with_files = _db.notes_with_files(user_id, [r["id"] for r in rows]) if user_id else set()
     lines = []
     for r in rows:
         when = r["created_at"].strftime("%d.%m") if r.get("created_at") else "—"
         body = (r.get("body") or "").replace("\n", " ")
         src = f" [{r['source']}]" if r.get("source") and r["source"] != "telegram" else ""
         proj = f" ({r['project']})" if r.get("project") else ""
-        lines.append(f"#{r['id']} {when}{proj}{src}: {body[:200]}")
+        clip = " 📎" if r["id"] in with_files else ""
+        lines.append(f"#{r['id']} {when}{proj}{src}{clip}: {body[:200]}")
     return "\n".join(lines)
 
 
@@ -74,7 +77,7 @@ def _search(scope: UserScope, ctx: ToolContext, query: str, source: str) -> str:
     rows = db.search_notes(scope.user_id, query, source=source or None)
     if not rows:
         return "No notes match. Say so honestly; do not invent."
-    return f"{len(rows)} note(s):\n" + _fmt(rows)
+    return f"{len(rows)} note(s):\n" + _fmt(rows, scope.user_id)
 
 
 NOTE_SEARCH = Tool(
@@ -96,7 +99,7 @@ def _recent(scope: UserScope, ctx: ToolContext, project: str, limit: int) -> str
     rows = db.recent_notes(scope.user_id, limit=max(1, min(limit, 20)), project=project or None)
     if not rows:
         return "No notes yet."
-    return f"{len(rows)} most recent note(s):\n" + _fmt(rows)
+    return f"{len(rows)} most recent note(s):\n" + _fmt(rows, scope.user_id)
 
 
 NOTE_RECENT = Tool(
@@ -111,4 +114,32 @@ NOTE_RECENT = Tool(
         },
     },
     fn=_recent,
+)
+
+
+def _send_file(scope: UserScope, ctx: ToolContext, note_id: int) -> str:
+    """FR-61: the file a note came from, back into the user's own chat. Telegram
+    keeps the bytes; the stored file_id is enough to send them again."""
+    from sveta.core import db as _db, telegram
+    row = _db.note_file(scope.user_id, int(note_id))
+    if not row:
+        return f"Note #{note_id} has no file attached (or is not this user's)."
+    name = row.get("file_name") or "файл"
+    message_id = telegram.send_document(scope.chat_id, name, row["file_id"],
+                                        caption=f"📎 {name}")
+    if message_id is None:
+        return f"Error: Telegram did not accept the file of note #{note_id}."
+    return f"Sent the file of note #{note_id} ({name}) to the chat. Do not describe it; say it is above."
+
+
+NOTE_SEND_FILE = Tool(
+    name="note_send_file",
+    description=("Send the photo or document a note came from back into the chat — for "
+                 "'пришли тот чек', 'скинь скан посадочного'. Find the note with note_search "
+                 "first; notes that carry a file are marked 📎 in the results."),
+    input_schema={
+        "type": "object",
+        "properties": {"note_id": {"type": "integer", "description": "The note id from note_search or note_recent."}},
+    },
+    fn=_send_file,
 )

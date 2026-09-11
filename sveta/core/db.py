@@ -323,6 +323,10 @@ def schema_statements() -> list[str]:
         # sees); suggestions are the FR-43 buttons, kept until one is tapped.
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS reply_text TEXT",
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS suggestions JSONB",
+        # FR-59: a photo or a document keeps its Telegram id, name and type; the
+        # bytes stay with Telegram (§8) and file_id is enough to send it back.
+        "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_name TEXT",
+        "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_mime TEXT",
     ]
 
 
@@ -409,7 +413,8 @@ def get_user_by_id(user_id: int) -> dict | None:
 # --- Inbox -------------------------------------------------------------------
 
 def claim_update(update_id: int | None, user_id: int, *, message_id=None, kind="text",
-                 raw_text=None, file_id=None, duration_sec=None) -> int | None:
+                 raw_text=None, file_id=None, duration_sec=None, file_name=None,
+                 file_mime=None) -> int | None:
     """Record an incoming update and return its inbox_items.id — or None if this
     update_id was already seen. None is the caller's signal to stop, and it must be
     checked before anything paid happens (FR-3)."""
@@ -419,10 +424,12 @@ def claim_update(update_id: int | None, user_id: int, *, message_id=None, kind="
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO inbox_items
-                       (user_id, tg_update_id, message_id, kind, raw_text, file_id, duration_sec)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       (user_id, tg_update_id, message_id, kind, raw_text, file_id, duration_sec,
+                        file_name, file_mime)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (tg_update_id) DO NOTHING RETURNING id""",
-                    (user_id, update_id, message_id, kind, raw_text, file_id, duration_sec),
+                    (user_id, update_id, message_id, kind, raw_text, file_id, duration_sec,
+                     file_name, file_mime),
                 )
                 row = cur.fetchone()
                 return row["id"] if row else None
@@ -563,6 +570,41 @@ def get_note(user_id: int, note_id: int) -> dict | None:
                             "FROM notes WHERE id = %s AND user_id = %s", (note_id, user_id))
                 row = cur.fetchone()
                 return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def note_file(user_id: int, note_id: int) -> dict | None:
+    """The file behind a note, if the note came from one (FR-61): the Telegram id
+    is enough to send it back without a second upload."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT i.file_id, i.file_name, i.file_mime, i.kind
+                       FROM notes n JOIN inbox_items i ON i.id = n.inbox_item_id
+                       WHERE n.id = %s AND n.user_id = %s AND i.file_id IS NOT NULL""",
+                    (note_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def notes_with_files(user_id: int, note_ids: list[int]) -> set[int]:
+    """Which of these notes carry a file, so search results can say so."""
+    if not note_ids:
+        return set()
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT n.id FROM notes n JOIN inbox_items i ON i.id = n.inbox_item_id
+                       WHERE n.user_id = %s AND n.id = ANY(%s) AND i.file_id IS NOT NULL""",
+                    (user_id, list(note_ids)))
+                return {r["id"] for r in cur.fetchall()}
     finally:
         conn.close()
 

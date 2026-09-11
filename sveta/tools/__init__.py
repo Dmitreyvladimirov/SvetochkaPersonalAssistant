@@ -76,6 +76,7 @@ REGISTRY: list[Tool] = [
     notes.NOTE_SAVE,
     notes.NOTE_SEARCH,
     notes.NOTE_RECENT,
+    notes.NOTE_SEND_FILE,
     dump.NOTES_PROPOSE,
     facts.FACT_REMEMBER,
     facts.FACT_RECALL,
