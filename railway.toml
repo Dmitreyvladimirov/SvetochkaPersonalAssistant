@@ -1,4 +1,6 @@
+# Deploy settings live on each Railway service (config-as-code files are
+# deprecated on Railway): sveta-web has the /health healthcheck, digest and
+# ingest have their cron schedules and no healthcheck. This file stays only as
+# a readable record of the start command every role shares.
 [deploy]
 startCommand = "bash run.sh"
-healthcheckPath = "/health"
-healthcheckTimeout = 120
