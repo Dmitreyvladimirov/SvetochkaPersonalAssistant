@@ -129,7 +129,7 @@ def test_undo_button_soft_deletes_and_records_a_correction(monkeypatch):
     bot.handle_update({"update_id": 9, "callback_query": {"id": "cb1", "data": f"undo:{nid}",
                                                           "message": {"chat": {"id": 111}}}})
     assert fake.notes[nid]["deleted_at"] is not None
-    assert fake.corrections[-1]["did"] == f"saved note #{nid}"
+    assert fake.corrections[-1]["did"] == "saved as a note: «wrong place»"
     assert "Убрала" in sent.messages[-1][1]
 
 

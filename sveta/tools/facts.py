@@ -14,12 +14,16 @@ def _fmt(f: dict) -> str:
     return line
 
 
-def _remember(scope: UserScope, ctx: ToolContext, subject: str, predicate: str, object: str) -> str:
+def _remember(scope: UserScope, ctx: ToolContext, subject: str, predicate: str, object: str,
+              replaces: bool) -> str:
     subject, predicate, object = (subject or "").strip(), (predicate or "").strip(), (object or "").strip()
     if not (subject and predicate and object):
         return "Error: subject, predicate and object are all required."
-    fact_id, closed = db.remember_fact(scope.user_id, subject, predicate, object)
-    tail = f"; closed {closed} older fact(s) about the same thing" if closed else ""
+    fact_id, closed = db.remember_fact(scope.user_id, subject, predicate, object, replaces=bool(replaces))
+    tail = ""
+    if closed:
+        tail = "; this replaces the earlier: " + ", ".join(f"'{subject} — {predicate} — {c}'" for c in closed) + \
+               " (kept with an end date). Mention what was replaced."
     return f"Remembered fact #{fact_id}: {subject} — {predicate} — {object}{tail}."
 
 
@@ -27,15 +31,18 @@ FACT_REMEMBER = Tool(
     name="fact_remember",
     description=("Remember a fact about a person, place or thing as subject — predicate — object: "
                  "'Костя отвечает за инфру' → ('Костя', 'отвечает за', 'инфру'); 'врач Светы — Иванова' "
-                 "→ ('Света', 'врач', 'Иванова'). A newer fact with the same subject and predicate "
-                 "replaces the old one (the old one is kept with an end date). Use for 'запомни, что…' "
+                 "→ ('Света', 'врач', 'Иванова'). replaces=true (a person has ONE doctor, ONE "
+                 "address: 'теперь', 'сменил', 'больше не') closes the earlier fact with the same "
+                 "subject and predicate, kept with an end date. replaces=false when the statement "
+                 "adds to what is true ('Костя ещё отвечает за бэкапы'). Use for 'запомни, что…' "
                  "statements about who/what/where; use note_save for thoughts and ideas."),
     input_schema={
         "type": "object",
         "properties": {
-            "subject": {"type": "string", "description": "Who or what the fact is about."},
+            "subject": {"type": "string", "description": "Who or what the fact is about, in the nominative (Света, not Светы)."},
             "predicate": {"type": "string", "description": "The relation, short: 'отвечает за', 'врач', 'живёт в', 'день рождения'."},
             "object": {"type": "string", "description": "The value."},
+            "replaces": {"type": "boolean", "description": "true if this supersedes the earlier value; false if it adds to it."},
         },
     },
     fn=_remember,
@@ -60,7 +67,7 @@ FACT_RECALL = Tool(
     input_schema={
         "type": "object",
         "properties": {
-            "topic": {"type": "string", "description": "A name or a word from the subject or the value."},
+            "topic": {"type": "string", "description": "A name or a word from the subject or the value, in the nominative or as a stem (Свет, Кост)."},
             "include_history": {"type": "boolean", "description": "true to include facts that are no longer current."},
         },
     },

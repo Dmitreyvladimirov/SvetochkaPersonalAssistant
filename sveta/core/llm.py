@@ -72,14 +72,19 @@ def classify_error(exc: BaseException) -> str | None:
     """FR-39: a dead credential is said plainly in the chat, not hidden behind
     'модель не ответила'. Returns the user-facing sentence, or None when the
     error is something else (the generic text applies)."""
-    text = str(exc)
-    name = type(exc).__name__
-    if name == "AuthenticationError" or "invalid x-api-key" in text:
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover
+        return None
+    if not isinstance(exc, anthropic.APIStatusError):
+        return None
+    text = str(exc).lower()
+    if exc.status_code == 401:
         return ("Ключ Anthropic не принимается (401). Проверь sveta_anthropic в Railway — "
                 "до тех пор я не отвечаю на свободный текст.")
-    if "credit balance" in text.lower():
+    if exc.status_code == 400 and "credit balance" in text:
         return ("У аккаунта Anthropic закончился кредит. Пополни в Console → Plans & Billing — "
                 "до тех пор я не отвечаю на свободный текст, но всё сохраняю.")
-    if name == "PermissionDeniedError":
+    if exc.status_code == 403:
         return "Ключу Anthropic не хватает прав (403). Проверь workspace ключа в Console."
     return None

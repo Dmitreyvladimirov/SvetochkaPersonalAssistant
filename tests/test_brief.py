@@ -24,6 +24,20 @@ def setup(monkeypatch, *, prefs=None):
     return fake, sent
 
 
+# A model reply that keeps every time and URL of fill()'s data — the guard requires it.
+BRIEF_REPLY = "Утро! 11:00 банк, 19:00 спорт; висит: оплатить счёт; ☐ маме, ☐ посылка; почитать https://blog.example/1"
+
+
+def api_error(status, message):
+    """A real anthropic status error, the only kind FR-39 is allowed to name."""
+    import anthropic
+    import httpx
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    cls = {400: anthropic.BadRequestError, 401: anthropic.AuthenticationError,
+           403: anthropic.PermissionDeniedError}[status]
+    return cls(f"Error code: {status} - {message}", response=httpx.Response(status, request=req), body=None)
+
+
 def local(h, m=0, day=12):
     return datetime(2026, 9, day, h, m, tzinfo=ZoneInfo(TZ))
 
@@ -46,13 +60,41 @@ def fill(fake):
 
 
 def test_due_kinds_window():
+    """Wide on purpose: Railway cron is best-effort, at-most-once comes from the
+    digests UNIQUE. A run at 07:46 or 09:50 must still produce the 07:30 brief."""
     prefs = {"brief.time": "07:30", "review.time": "21:00"}
     assert brief.due_kinds(prefs, local(7, 29)) == []
     assert brief.due_kinds(prefs, local(7, 30)) == ["brief"]
-    assert brief.due_kinds(prefs, local(7, 44)) == ["brief"]
-    assert brief.due_kinds(prefs, local(7, 45)) == []
+    assert brief.due_kinds(prefs, local(9, 50)) == ["brief"]
+    assert brief.due_kinds(prefs, local(10, 30)) == []
     assert brief.due_kinds(prefs, local(21, 5)) == ["review"]
+    assert brief.due_kinds(prefs, local(23, 59)) == ["review"]
     assert brief.due_kinds({"brief.time": "nonsense"}, local(7, 31)) == ["brief"]   # default survives garbage
+
+
+def test_unsent_digest_is_resent_without_a_second_model_call(monkeypatch):
+    fake, sent = setup(monkeypatch)
+    fill(fake)
+    user = fake.active_users()[0]
+    monkeypatch.setattr(telegram, "send_message", lambda *a, **k: None)   # Telegram down
+    assert brief.send_for_user(user, "brief", NOW, client=FakeClient([BRIEF_REPLY])) == "failed"
+    (digest_id,) = list(fake.digests)
+    assert fake.digests[digest_id]["sent_at"] is None and fake.llm_calls
+    monkeypatch.setattr(telegram, "send_message", sent.send_message)      # back up, next run
+    calls_before = len(fake.llm_calls)
+    assert brief.send_for_user(user, "brief", NOW, client=FakeClient(["НЕ ДОЛЖНО ВЫЗВАТЬСЯ"])) == "resent"
+    assert sent.messages[-1][1] == BRIEF_REPLY and len(fake.llm_calls) == calls_before
+    assert fake.digests[digest_id]["tg_message_id"] == 1
+    assert brief.send_for_user(user, "brief", NOW) == "already"
+
+
+def test_template_flattens_multiline_items():
+    sections = {"today": ["11:00 a\nb\nc", "12:00 d"], "list_today": [f"☐ {i}" for i in range(8)]}
+    # gather() flattens at the source; template() must still never exceed 10 physical lines
+    from sveta.jobs.brief import _one_line
+    sections = {k: [_one_line(v) for v in vs] for k, vs in sections.items()}
+    text = brief.template("brief", sections, {})
+    assert len(text.split("\n")) <= 10 and "11:00 a b c" in text
 
 
 def test_gather_brief_sections_in_local_time(monkeypatch):
@@ -70,8 +112,9 @@ def test_empty_sections_are_absent(monkeypatch):
     assert brief.gather(1, "brief", NOW, TZ) == {}
     fake.create_reminder(1, "x", local(11), TZ, "k")
     assert list(brief.gather(1, "brief", NOW, TZ)) == ["today"]
-    text = brief.template("brief", {"today": ["11:00 x"]}, {})
+    text = brief.template("brief", {"today": ["11:00 x"]}, {"persona.address": "Дима, на ты"})
     assert text == "Доброе утро, Дима.\nНапоминания сегодня:\n11:00 x"
+    assert brief.template("brief", {"today": ["11:00 x"]}, {}).startswith("Доброе утро.\n")   # no name invented
     assert "Встреч" not in text and "Почитать" not in text
 
 
@@ -90,8 +133,11 @@ def test_template_never_exceeds_ten_lines():
 def test_model_may_only_rephrase_within_ten_lines(monkeypatch):
     fake, _ = setup(monkeypatch)
     sections = {"today": ["11:00 банк"]}
-    text, model, cost, alert = brief.compose("brief", sections, {}, 1, client=FakeClient(["Утро! В 11 — банк."]))
-    assert text == "Утро! В 11 — банк." and model and cost > 0 and alert is None
+    text, model, cost, alert = brief.compose("brief", sections, {}, 1, client=FakeClient(["Утро! В 11:00 — банк."]))
+    assert text == "Утро! В 11:00 — банк." and model and cost > 0 and alert is None
+    # The model dropped the time → template (review item 7).
+    text, model, _, _ = brief.compose("brief", sections, {}, 1, client=FakeClient(["Утро! Банк."]))
+    assert model is None and text.startswith("Доброе утро")
     assert fake.llm_calls[-1]["purpose"] == "brief"
     long = "\n".join(f"line {i}" for i in range(12))
     text, model, _, _ = brief.compose("brief", sections, {}, 1, client=FakeClient([long]))
@@ -105,7 +151,7 @@ def test_model_failure_falls_back_and_names_a_dead_credential(monkeypatch):
         class messages:
             @staticmethod
             def create(**kw):
-                raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
+                raise api_error(400, "Your credit balance is too low to access the Anthropic API.")
     text, model, cost, alert = brief.compose("brief", {"today": ["11:00 банк"]}, {}, 1, client=Dead())
     assert model is None and text.startswith("Доброе утро") and "кредит" in alert
 
@@ -113,11 +159,11 @@ def test_model_failure_falls_back_and_names_a_dead_credential(monkeypatch):
 def test_send_for_user_is_once_per_day_and_carries_reactions(monkeypatch):
     fake, sent = setup(monkeypatch)
     fill(fake)
-    client = FakeClient(["Бриф."])
+    client = FakeClient([BRIEF_REPLY])
     assert brief.send_for_user(fake.active_users()[0], "brief", NOW, client=client) == "sent"
     assert brief.send_for_user(fake.active_users()[0], "brief", NOW, client=client) == "already"
     chat, text, markup = sent.messages[-1]
-    assert chat == "111" and text == "Бриф."
+    assert chat == "111" and text == BRIEF_REPLY
     (digest_id,) = list(fake.digests)
     assert [b["callback_data"] for b in markup["inline_keyboard"][0]] == [f"dg:up:{digest_id}", f"dg:down:{digest_id}"]
     assert fake.digests[digest_id]["tg_message_id"] == 1 and fake.digests[digest_id]["payload"]["sections"]["today"]
@@ -138,9 +184,9 @@ def test_run_respects_each_users_time_and_tz(monkeypatch):
     fake, sent = setup(monkeypatch, prefs={"brief.time": "07:30"})
     fake.add_user("222", tz="Europe/Berlin")   # 06:32 there — not due
     fill(fake)
-    results = brief.run(NOW, client=FakeClient(["Бриф."]))
+    results = brief.run(NOW, client=FakeClient([BRIEF_REPLY]))
     assert results == {"1:brief": "sent"}
-    assert brief.run(NOW, client=FakeClient(["Бриф."])) == {"1:brief": "already"}
+    assert brief.run(NOW, client=FakeClient([BRIEF_REPLY])) == {"1:brief": "already"}
 
 
 def test_review_lists_only_what_is_open(monkeypatch):
@@ -149,14 +195,18 @@ def test_review_lists_only_what_is_open(monkeypatch):
     evening = datetime(2026, 9, 12, 18, 3, tzinfo=timezone.utc)   # 21:03 local
     sections = brief.gather(1, "review", evening, TZ)
     assert sections["open"] == ["оплатить счёт"] and sections["list_today"] == ["☐ позвонить маме", "☐ забрать посылку"]
-    assert brief.run(evening, client=FakeClient(["Обзор."])) == {"1:review": "sent"}
+    assert brief.run(evening, client=FakeClient(["Обзор: оплатить счёт; ☐ позвонить маме, ☐ забрать посылку"])) == {"1:review": "sent"}
+    # Nothing open → nothing sent, window closed.
+    fake2 = install(monkeypatch)
+    fake2.add_user("111", tz=TZ)
+    assert brief.run(evening) == {"1:review": "empty"}
     assert brief.template("review", sections, {}).startswith("Вечерний обзор.\nНе закрыто:")
 
 
 def test_dry_run_prints_and_writes_nothing(monkeypatch, capsys):
     fake, sent = setup(monkeypatch)
     fill(fake)
-    monkeypatch.setattr(digest.config, "validate_secrets", lambda: None)
+    monkeypatch.setattr(digest.config, "validate_secrets", lambda *a: None)
     assert digest.main(["--dry-run", "--now", NOW.isoformat(), "--force", "brief"]) == 0
     out = capsys.readouterr().out
     assert "--- brief for user 1" in out and "позвонить в банк" in out
@@ -193,7 +243,19 @@ def test_dead_credential_is_named_in_the_chat(monkeypatch):
     fake, sent, client = wire(monkeypatch)
 
     def dead(*a, **k):
-        raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
+        raise api_error(400, "Your credit balance is too low to access the Anthropic API.")
     monkeypatch.setattr(agent, "run", dead)
-    bot.handle_update(msg("привет"))
+    bot.handle_update(msg("привет", update_id=1))
     assert "закончился кредит" in sent.edits[-1][2]
+
+    def unauthorised(*a, **k):
+        raise api_error(401, "invalid x-api-key")
+    monkeypatch.setattr(agent, "run", unauthorised)
+    bot.handle_update(msg("привет", update_id=2))
+    assert "401" in sent.edits[-1][2]
+
+    def ordinary(*a, **k):
+        raise api_error(400, "prompt is too long")
+    monkeypatch.setattr(agent, "run", ordinary)
+    bot.handle_update(msg("привет", update_id=3))
+    assert "модель не ответила" in sent.edits[-1][2]   # a plain 400 stays generic

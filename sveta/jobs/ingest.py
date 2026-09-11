@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    config.validate_secrets()
+    config.validate_secrets("ingest")
     try:
         db.ping()
     except Exception as e:  # noqa: BLE001

@@ -17,7 +17,7 @@ def _propose(scope: UserScope, ctx: ToolContext, items: list) -> str:
             kept.append({"kind": "note", "body": body[:2000], "project": project or None})
     if len(kept) < MIN_ITEMS:
         return f"Error: a proposal needs at least {MIN_ITEMS} records; for one thought use note_save."
-    kept = kept[:MAX_ITEMS]
+    kept = (ctx.proposal + kept)[:MAX_ITEMS]   # a second call in one turn adds, never overwrites
     ctx.proposal = kept
     listing = "\n".join(f"{n}. {it['body']}" + (f" ({it['project']})" if it["project"] else "")
                         for n, it in enumerate(kept, 1))

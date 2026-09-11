@@ -24,21 +24,26 @@ ATOM = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title
 def test_parse_rss():
     title, items = rss.parse(RSS, "https://blog.example/feed")
     assert title == "Blog" and len(items) == 2
-    assert items[0] == {"external_id": "tag:1", "url": "https://blog.example/1", "title": "First & best",
+    assert items[0] == {"external_id": "blog.example#tag:1", "url": "https://blog.example/1", "title": "First & best",
                         "summary": "Hello world", "published_at": datetime(2026, 9, 9, 10, 0, tzinfo=timezone.utc)}
     assert items[1]["external_id"] == "https://blog.example/relative/2" and items[1]["published_at"] is None
 
 
 def test_parse_atom():
     title, items = rss.parse(ATOM, "https://a.example/")
-    assert title == "Atom feed" and [i["external_id"] for i in items] == ["urn:a1", "urn:a2"]
+    assert title == "Atom feed" and [i["external_id"] for i in items] == ["a.example#urn:a1", "a.example#urn:a2"]
     assert items[0]["url"] == "https://a.example/1" and items[0]["summary"] == "Sum"
     assert items[1]["url"] is None and items[1]["summary"] == "Body"
     assert items[1]["published_at"].utcoffset().total_seconds() == 7200
 
 
+DTD = b'<!DOCTYPE lolz [<!ENTITY lol "lol">]><rss version="2.0"><channel><title>&lol;</title></channel></rss>'
+
+
 @pytest.mark.parametrize("body", [b"<html><body>not a feed</body></html>", b"garbage <<", b"",
-                                  b'<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">]><rss><channel><title>&lol;</title></channel></rss>'])
+                                  b'<?xml version="1.0"?>' + DTD,
+                                  b'<?xml version="1.0"?><!--' + b"x" * 5000 + b"-->" + DTD,   # DTD past a 4 KB head
+                                  ('<?xml version="1.0" encoding="utf-16"?>' + DTD.decode()).encode("utf-16")])
 def test_not_a_feed_raises(body):
     with pytest.raises(ValueError):
         rss.parse(body)
@@ -86,3 +91,24 @@ def test_items_never_cross_users(monkeypatch):
     from sveta.core import db
     since = datetime(2000, 1, 1, tzinfo=timezone.utc)
     assert len(db.recent_source_items(1, since)) == 2 and db.recent_source_items(2, since) == []
+
+
+def test_counter_guids_do_not_collide_across_feeds(monkeypatch):
+    fake = install(monkeypatch)
+    fake.add_user("111")
+    feed = b'<rss version="2.0"><channel><title>T</title><item><title>x</title><link>/p/1</link><guid isPermaLink="false">1234</guid></item></channel></rss>'
+    a, _ = fake.add_source(1, "https://a.example/feed")
+    b, _ = fake.add_source(1, "https://b.example/feed")
+    monkeypatch.setattr(fetch, "get_bytes", lambda url: (feed, {}, None))
+    assert rss.poll(fake.sources[a]) == 1 and rss.poll(fake.sources[b]) == 1
+    assert sorted(i["external_id"] for i in fake.source_items.values()) == ["a.example#1234", "b.example#1234"]
+
+
+def test_rss_rm_is_scoped_to_the_user(monkeypatch):
+    from tests.test_bot import msg, wire
+    fake, sent, client = wire(monkeypatch)
+    fake.add_user("222")
+    fake.add_source(2, "https://theirs.example/feed", title="Theirs")
+    bot_mod = __import__("sveta.core.bot", fromlist=["bot"])
+    bot_mod.handle_update(msg("/rss rm 1", update_id=1))
+    assert "Нет ленты с номером 1" in sent.messages[-1][1] and len(fake.sources) == 1

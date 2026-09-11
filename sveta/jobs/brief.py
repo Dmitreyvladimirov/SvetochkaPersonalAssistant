@@ -8,6 +8,7 @@ longer than ten lines or the call fails, the template is what gets sent.
 Per user, per day, idempotent: `digests` has UNIQUE (user_id, kind, for_date),
 so the 15-minute cron window cannot send twice."""
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -16,7 +17,10 @@ from sveta.core import config, db, llm, telegram
 logger = logging.getLogger(__name__)
 
 MAX_LINES = 10
-WINDOW_MINUTES = 15
+# Railway cron is best-effort (a run is skipped while the previous one is still
+# running), so the window is wide; at-most-once comes from the digests UNIQUE,
+# not from the window.
+WINDOW_MINUTES = 180
 KINDS = {"brief": ("brief.time", "07:30"), "review": ("review.time", "21:00")}
 HEADERS = {
     "today": "Напоминания сегодня",
@@ -28,13 +32,12 @@ HEADERS = {
 
 
 def _hhmm(value: str, default: str) -> tuple[int, int]:
-    try:
-        h, m = (value or default).strip().split(":")
-        h, m = int(h), int(m)
-        if 0 <= h < 24 and 0 <= m < 60:
-            return h, m
-    except (ValueError, AttributeError):
-        pass
+    """'07:30', '7:30', '7.30', '8' all work; garbage falls back to the default."""
+    m = re.fullmatch(r"\s*(\d{1,2})(?:[:.](\d{2}))?\s*", value or "")
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2) or 0)
+        if 0 <= h < 24 and 0 <= mi < 60:
+            return h, mi
     h, m = default.split(":")
     return int(h), int(m)
 
@@ -61,24 +64,30 @@ def gather(user_id: int, kind: str, now: datetime, tz: str) -> dict[str, list[st
     if kind == "brief":
         today = db.reminders_between(user_id, day_start, day_end)
         if today:
-            sections["today"] = [f"{r['fire_at'].astimezone(zone):%H:%M} {r['text']}" for r in today]
+            sections["today"] = [f"{r['fire_at'].astimezone(zone):%H:%M} {_one_line(r['text'])}" for r in today]
         overdue = db.reminders_overdue(user_id, day_start)
         if overdue:
-            sections["overdue"] = [f"{r['sent_at'].astimezone(zone):%d.%m} {r['text']}" for r in overdue]
+            sections["overdue"] = [f"{r['sent_at'].astimezone(zone):%d.%m} {_one_line(r['text'])}" for r in overdue]
         lines = db.unchecked_list_items(user_id, "Сегодня")
         if lines:
-            sections["list_today"] = [f"☐ {i['text']}" for i in lines]
+            sections["list_today"] = [f"☐ {_one_line(i['text'])}" for i in lines]
         news = db.recent_source_items(user_id, now - timedelta(hours=24), limit=3)
         if news:
-            sections["news"] = [f"{n['title'] or n['url']} — {n['url']}" for n in news if n.get("url") or n.get("title")]
+            sections["news"] = [f"{_one_line(n['title'] or n['url'])} — {n['url']}" for n in news
+                                if n.get("url") or n.get("title")]
     else:  # review
         open_ = db.reminders_overdue(user_id, now)
         if open_:
-            sections["open"] = [f"{r['text']}" for r in open_]
+            sections["open"] = [_one_line(r["text"]) for r in open_]
         lines = db.unchecked_list_items(user_id, "Сегодня")
         if lines:
-            sections["list_today"] = [f"☐ {i['text']}" for i in lines]
+            sections["list_today"] = [f"☐ {_one_line(i['text'])}" for i in lines]
     return sections
+
+
+def _one_line(text: str, limit: int = 120) -> str:
+    """One physical line per item, or the ≤10-line guarantee means nothing."""
+    return " ".join((text or "").split())[:limit]
 
 
 def template(kind: str, sections: dict[str, list[str]], prefs: dict) -> str:
@@ -86,7 +95,9 @@ def template(kind: str, sections: dict[str, list[str]], prefs: dict) -> str:
     important (news) upward until it fits; a trimmed section ends with '…и ещё N'."""
     greeting = []
     if kind == "brief" and prefs.get("persona.greeting", "yes") != "no":
-        greeting = [f"Доброе утро, {prefs.get('persona.address', 'Дима').split(',')[0].strip()}."]
+        # No name unless the user set one: a second user must not be greeted as Дима.
+        name = prefs.get("persona.address", "").split(",")[0].strip().strip("«»\"")
+        greeting = [f"Доброе утро, {name}." if name else "Доброе утро."]
     elif kind == "review":
         greeting = ["Вечерний обзор."]
 
@@ -142,6 +153,10 @@ def compose(kind: str, sections: dict[str, list[str]], prefs: dict, user_id: int
         if not lines or len(lines) > MAX_LINES:
             logger.warning("brief: model text rejected (%d lines) — using the template", len(lines))
             return base, None, cost, None
+        missing = _dropped_facts(sections, text)
+        if missing:
+            logger.warning("brief: model dropped %s — using the template", missing[:3])
+            return base, None, cost, None
         return "\n".join(lines), config.BRIEF_MODEL, cost, None
     except llm.BudgetExceeded as e:
         logger.warning("brief: budget exceeded for user %s (%s) — template", user_id, e)
@@ -149,6 +164,17 @@ def compose(kind: str, sections: dict[str, list[str]], prefs: dict, user_id: int
     except Exception as e:  # noqa: BLE001 — the brief still goes out
         logger.exception("brief: model call failed — using the template")
         return base, None, 0.0, llm.classify_error(e)
+
+
+_FACT_TOKEN = re.compile(r"\b\d{1,2}:\d{2}\b|https?://\S+")
+
+
+def _dropped_facts(sections: dict[str, list[str]], text: str) -> list[str]:
+    """Every clock time and every URL in the gathered data must survive the
+    model's rephrasing verbatim — the cheap deterministic check that it did not
+    drop or alter an item."""
+    return [tok for lines in sections.values() for line in lines
+            for tok in _FACT_TOKEN.findall(line) if tok not in text]
 
 
 def reaction_keyboard(digest_id: int) -> dict:
@@ -162,8 +188,21 @@ def send_for_user(user: dict, kind: str, now: datetime, *, dry_run: bool = False
     already | empty | sent | dry-run | failed."""
     zone = ZoneInfo(user["tz"] or config.TZ)
     for_date = now.astimezone(zone).date()
-    if db.get_digest(user["id"], kind, for_date):
-        return "already"
+    existing = db.get_digest(user["id"], kind, for_date)
+    if existing:
+        payload = existing.get("payload") or {}
+        if existing.get("sent_at") or payload.get("empty") or not payload.get("text"):
+            return "already"
+        # Composed and paid for, but Telegram did not take it: resend the same text
+        # (§9 — a failure is retried, never silently dropped).
+        if dry_run:
+            return "dry-run"
+        message_id = telegram.send_message(payload["text"], user["telegram_chat_id"],
+                                           reaction_keyboard(existing["id"]))
+        if message_id is None:
+            return "failed"
+        db.set_digest_sent(user["id"], existing["id"], message_id)
+        return "resent"
     prefs = db.list_preferences(user["id"])
     sections = gather(user["id"], kind, now, user["tz"] or config.TZ)
     if not sections:

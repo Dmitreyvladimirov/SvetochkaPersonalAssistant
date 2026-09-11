@@ -38,7 +38,7 @@ def _find_item(items: list[dict], item: str) -> dict | None:
 
 def _add(scope: UserScope, ctx: ToolContext, list_name: str, items: list) -> str:
     name = (list_name or "").strip()
-    texts = [str(t).strip() for t in (items or []) if str(t).strip()]
+    texts = [" ".join(str(t).split()) for t in (items or []) if str(t).strip()]
     if not name:
         return "Error: list_name is empty."
     if not texts:

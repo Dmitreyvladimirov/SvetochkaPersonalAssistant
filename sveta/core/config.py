@@ -102,8 +102,17 @@ REQUIRED: tuple[tuple[str, ...], ...] = (
 )
 
 
-def validate_secrets() -> None:
+# The cron roles need less: no webhook, no seed list, no Whisper.
+REQUIRED_BY_ROLE: dict[str, tuple[tuple[str, ...], ...]] = {
+    "web": REQUIRED,
+    "digest": (("DATABASE_URL",), ("SVETA_TELEGRAM_TOKEN", "sveta_telegram_token"),
+               ("ANTHROPIC_API_KEY", "sveta_anthropic")),
+    "ingest": (("DATABASE_URL",),),
+}
+
+
+def validate_secrets(role: str = "web") -> None:
     """Fail fast, and say exactly which variable is missing by its canonical name."""
-    missing = [names[0] for names in REQUIRED if not _env(*names)]
+    missing = [names[0] for names in REQUIRED_BY_ROLE.get(role, REQUIRED) if not _env(*names)]
     if missing:
         raise EnvironmentError(f"Missing required env vars: {', '.join(missing)}")

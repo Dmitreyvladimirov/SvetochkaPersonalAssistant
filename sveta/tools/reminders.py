@@ -15,7 +15,7 @@ def _now() -> datetime:
 
 
 def _create(scope: UserScope, ctx: ToolContext, text: str, when: str) -> str:
-    text, when = (text or "").strip(), (when or "").strip()
+    text, when = " ".join((text or "").split()), (when or "").strip()
     if not text:
         return "Error: text is empty — what should the reminder say?"
     if not when:

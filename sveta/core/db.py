@@ -539,6 +539,34 @@ def recent_notes(user_id: int, *, limit: int = 10, project: str | None = None) -
         conn.close()
 
 
+def get_note(user_id: int, note_id: int) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, body, project, source FROM notes WHERE id = %s AND user_id = %s",
+                            (note_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def items_between(user_id: int, since, before_item_id: int) -> int:
+    """How many inbox items arrived after `since` and before the given item — the
+    FR-15 check that the message answering 'Не туда' is the very next one."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) AS n FROM inbox_items "
+                            "WHERE user_id = %s AND received_at >= %s AND id < %s",
+                            (user_id, since, before_item_id))
+                return int(cur.fetchone()["n"])
+    finally:
+        conn.close()
+
+
 def soft_delete_note(user_id: int, note_id: int) -> bool:
     """What the "Не туда" button does. Soft, because the text is rarely the mistake —
     the filing is — and it should survive being filed wrongly."""
@@ -1124,15 +1152,16 @@ def delete_source(user_id: int, source_id: int) -> bool:
         conn.close()
 
 
-def mark_source_polled(source_id: int, *, error: str | None = None, etag: str | None = None,
-                       title: str | None = None) -> None:
+def mark_source_polled(user_id: int, source_id: int, *, error: str | None = None,
+                       etag: str | None = None, title: str | None = None) -> None:
     conn = _conn()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute("UPDATE sources SET last_polled_at = NOW(), last_error = %s, "
-                            "etag = COALESCE(%s, etag), title = COALESCE(%s, title) WHERE id = %s",
-                            (error, etag, title, source_id))
+                            "etag = COALESCE(%s, etag), title = COALESCE(%s, title) "
+                            "WHERE id = %s AND user_id = %s",
+                            (error, etag, title, source_id, user_id))
     finally:
         conn.close()
 
@@ -1191,20 +1220,24 @@ def spend_month(user_id: int) -> float:
 # --- Stage 5: facts with a validity window, open corrections -------------------
 
 def remember_fact(user_id: int, subject: str, predicate: str, obj: str, *,
-                  source_note_id: int | None = None) -> tuple[int, int]:
-    """Close every open fact with the same (subject, predicate) and insert the new
-    one (FR-45). Returns (new_id, closed_count). The old rows stay, with valid_to."""
+                  replaces: bool = True, source_note_id: int | None = None) -> tuple[int, list[str]]:
+    """Insert the fact; with replaces=True close every open fact with the same
+    (subject, predicate) and a different object (FR-45). Returns (id, the closed
+    facts' objects). The old rows stay, with valid_to."""
     conn = _conn()
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """UPDATE facts SET valid_to = NOW()
-                       WHERE user_id = %s AND valid_to IS NULL
-                         AND lower(subject) = lower(%s) AND lower(predicate) = lower(%s)
-                         AND NOT (lower(object) = lower(%s))""",
-                    (user_id, subject, predicate, obj))
-                closed = cur.rowcount
+                closed: list[str] = []
+                if replaces:
+                    cur.execute(
+                        """UPDATE facts SET valid_to = NOW()
+                           WHERE user_id = %s AND valid_to IS NULL
+                             AND lower(subject) = lower(%s) AND lower(predicate) = lower(%s)
+                             AND NOT (lower(object) = lower(%s))
+                           RETURNING object""",
+                        (user_id, subject, predicate, obj))
+                    closed = [r["object"] for r in cur.fetchall()]
                 cur.execute(
                     """SELECT id FROM facts WHERE user_id = %s AND valid_to IS NULL
                          AND lower(subject) = lower(%s) AND lower(predicate) = lower(%s)
@@ -1229,12 +1262,13 @@ def recall_facts(user_id: int, topic: str, *, include_closed: bool = False, limi
     try:
         with conn:
             with conn.cursor() as cur:
+                like = "%" + topic.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                 cur.execute(
                     f"""SELECT id, subject, predicate, object, valid_from, valid_to FROM facts
                         WHERE user_id = %s {"" if include_closed else "AND valid_to IS NULL"}
                           AND (subject ILIKE %s OR object ILIKE %s OR predicate ILIKE %s)
                         ORDER BY valid_to IS NOT NULL, valid_from DESC LIMIT %s""",
-                    (user_id, f"%{topic}%", f"%{topic}%", f"%{topic}%", limit))
+                    (user_id, like, like, like, limit))
                 return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()

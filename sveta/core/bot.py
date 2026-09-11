@@ -103,11 +103,6 @@ def _handle_message(update_id, message: dict) -> None:
         telegram.send_message("Вижу сообщение, но в нём нет текста.", chat_id)
         return
 
-    # FR-15: the message after "Не туда" says where the record should have gone.
-    pending = db.open_correction(scope.user_id)
-    if pending:
-        db.fill_correction(scope.user_id, pending["id"], text[:200])
-
     _process_text(scope, item_id, text, chat_id)
 
 
@@ -150,6 +145,14 @@ def _process_text(scope: UserScope, item_id: int, text: str, chat_id, *,
                   progress_id: int | None = None, prefix: str = "") -> None:
     """The same pipeline for typed text and transcripts: cheap path first (FR-6),
     then the agent."""
+    # FR-15: the first message after "Не туда" says where the record should have
+    # gone — unless it is plainly something else (a command, a bare link) or another
+    # message already came in between. Transcripts count too.
+    if not text.startswith("/") and not _URL_RE.match(text):
+        pending = db.open_correction(scope.user_id)
+        if pending and db.items_between(scope.user_id, pending["created_at"], item_id) == 0:
+            db.fill_correction(scope.user_id, pending["id"], text[:200])
+
     if text.startswith("/"):
         reply = _command(scope, text)
         db.mark_item(item_id, status="done", reply_text=reply)
@@ -265,7 +268,7 @@ def _rss_command(scope: UserScope, args: list[str]) -> str:
         if not created:
             return f"Эта лента уже есть: {title or url}."
         new = db.upsert_source_items(scope.user_id, source_id, items)
-        db.mark_source_polled(source_id, title=title)
+        db.mark_source_polled(scope.user_id, source_id, title=title)
         return f"Добавила ленту «{title or url}», записей сейчас: {new}. Свежее попадёт в утренний бриф."
     if args[0] == "rm" and len(args) >= 2 and args[1].isdigit():
         n = int(args[1])
@@ -343,10 +346,15 @@ def _handle_callback(update_id, callback: dict) -> None:
     if action == "dg":  # FR-32: a reaction is a quality signal, nothing else happens
         what, _, id_part = rest.partition(":")
         if what in ("up", "down") and id_part.isdigit():
-            db.set_digest_reaction(scope.user_id, int(id_part), what)
+            if db.set_digest_reaction(scope.user_id, int(id_part), what):
+                telegram.answer_callback(callback_id, "Спасибо, учту." if what == "down" else "Спасибо!")
         return
 
     if action == "dp" and rest.isdigit():
+        # A tap is an update like any other: a redelivery or a double tap dies on
+        # the update_id before anything is written (FR-3).
+        if db.claim_update(update_id, scope.user_id, kind="callback", raw_text=data) is None:
+            return
         _save_proposal(scope, int(rest), chat_id)
         return
 
@@ -415,8 +423,10 @@ def _undo(scope: UserScope, rest: str, chat_id) -> None:
         kind, ids = "n", rest
     if kind == "n" and ids.isdigit():
         note_id = int(ids)
+        note = db.get_note(scope.user_id, note_id)
         if db.soft_delete_note(scope.user_id, note_id):
-            db.add_correction(scope.user_id, None, f"saved note #{note_id}", None)
+            body = " ".join(((note or {}).get("body") or "").split())[:80]
+            db.add_correction(scope.user_id, None, f"saved as a note: «{body}»" if body else f"saved note #{note_id}", None)
             telegram.send_message("Убрала. Скажи, куда это на самом деле — запомню.", chat_id)
         else:
             telegram.send_message("Эту запись уже убрала раньше.", chat_id)

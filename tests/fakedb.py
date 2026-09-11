@@ -49,7 +49,8 @@ class FakeDB:
         iid = self._next()
         self.inbox[iid] = {"id": iid, "user_id": user_id, "tg_update_id": update_id, "kind": kind,
                            "raw_text": raw_text, "status": "new", "reply_text": None,
-                           "suggestions": None, "error": None}
+                           "suggestions": None, "error": None,
+                           "received_at": datetime.now(timezone.utc)}
         return iid
 
     def mark_item(self, item_id, *, status, error=None, reply_text=None, suggestions=None):
@@ -103,6 +104,14 @@ class FakeDB:
                and (project is None or r["project"] == project)]
         return list(reversed(out))[:limit]
 
+    def get_note(self, user_id, note_id):
+        r = self.notes.get(note_id)
+        return dict(r) if r and r["user_id"] == user_id else None
+
+    def items_between(self, user_id, since, before_item_id):
+        return sum(1 for r in self.inbox.values()
+                   if r["user_id"] == user_id and r["received_at"] >= since and r["id"] < before_item_id)
+
     def soft_delete_note(self, user_id, note_id):
         r = self.notes.get(note_id)
         if r and r["user_id"] == user_id and r["deleted_at"] is None:
@@ -125,7 +134,7 @@ class FakeDB:
                                  "should_have": should_have, "created_at": datetime.now(timezone.utc)})
 
     def recent_corrections(self, user_id, limit=5):
-        return [c for c in self.corrections if c["user_id"] == user_id][-limit:]
+        return list(reversed([c for c in self.corrections if c["user_id"] == user_id][-limit:]))
 
     def open_correction(self, user_id, *, max_age_minutes=15):
         from datetime import timedelta
@@ -143,15 +152,19 @@ class FakeDB:
         return False
 
     # facts
-    def remember_fact(self, user_id, subject, predicate, obj, *, source_note_id=None):
-        closed = 0
+    def remember_fact(self, user_id, subject, predicate, obj, *, replaces=True, source_note_id=None):
+        closed = []
+        same = None
         for f in self.facts.values():
             if (f["user_id"] == user_id and f["valid_to"] is None and f["subject"].lower() == subject.lower()
                     and f["predicate"].lower() == predicate.lower()):
                 if f["object"].lower() == obj.lower():
-                    return f["id"], closed
-                f["valid_to"] = datetime.now(timezone.utc)
-                closed += 1
+                    same = f
+                elif replaces:
+                    f["valid_to"] = datetime.now(timezone.utc)
+                    closed.append(f["object"])
+        if same:
+            return same["id"], closed
         fid = self._next()
         self.facts[fid] = {"id": fid, "user_id": user_id, "subject": subject, "predicate": predicate,
                            "object": obj, "valid_from": datetime.now(timezone.utc), "valid_to": None}
@@ -369,8 +382,10 @@ class FakeDB:
             return True
         return False
 
-    def mark_source_polled(self, source_id, *, error=None, etag=None, title=None):
+    def mark_source_polled(self, user_id, source_id, *, error=None, etag=None, title=None):
         s = self.sources[source_id]
+        if s["user_id"] != user_id:
+            return
         s["last_polled_at"] = datetime.now(timezone.utc)
         s["last_error"] = error
         if etag:

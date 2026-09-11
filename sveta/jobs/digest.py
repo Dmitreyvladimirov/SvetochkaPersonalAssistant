@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", choices=list(brief.KINDS), help="send this kind regardless of the window")
     args = parser.parse_args(argv)
 
-    config.validate_secrets()
+    config.validate_secrets("digest")
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)

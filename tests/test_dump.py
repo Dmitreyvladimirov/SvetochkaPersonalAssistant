@@ -70,3 +70,14 @@ def test_one_item_proposal_is_refused():
     out = run(REGISTRY, "notes_propose", UserScope(user_id=1, chat_id="1", tz="UTC"), ctx,
               {"items": [{"body": "одна мысль", "project": ""}, {"body": " ", "project": ""}]})
     assert out.startswith("Error") and ctx.proposal == []
+
+
+def test_double_tap_or_redelivery_saves_once(monkeypatch):
+    fake, sent, client = wire(monkeypatch, [PROPOSAL, "Список выше."])
+    bot.handle_update(msg("дамп", update_id=1))
+    item_id = list(fake.inbox)[0]
+    tap = {"update_id": 2, "callback_query": {"id": "cb", "data": f"dp:{item_id}",
+                                              "message": {"message_id": 1, "chat": {"id": 111}}}}
+    bot.handle_update(tap)
+    bot.handle_update(tap)          # Telegram redelivered the same update
+    assert len(fake.notes) == 3
