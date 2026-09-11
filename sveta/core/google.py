@@ -191,6 +191,22 @@ def _header(headers: list[dict], name: str) -> str:
     return ""
 
 
+def _attachments(payload: dict) -> list[dict]:
+    """Parts that carry a file: name, mime type, size, attachmentId (Gmail serves
+    the bytes separately). Recursive over multipart parts."""
+    out = []
+
+    def walk(part):
+        body = part.get("body") or {}
+        if part.get("filename") and body.get("attachmentId"):
+            out.append({"filename": part["filename"], "mime": part.get("mimeType", "application/octet-stream"),
+                        "size": int(body.get("size") or 0), "attachment_id": body["attachmentId"]})
+        for p in part.get("parts", []) or []:
+            walk(p)
+    walk(payload or {})
+    return out
+
+
 def _body_text(payload: dict) -> str:
     """text/plain first, then text/html stripped; recursive over parts."""
     from html import unescape
@@ -237,8 +253,36 @@ def search_mail(user_id: int, query: str, *, limit: int = 5) -> list[dict]:
                     "sender": _header(headers, "From"), "subject": _header(headers, "Subject"),
                     "snippet": msg.get("snippet", ""), "received_at": received,
                     "body": _body_text(msg.get("payload") or {}),
+                    "attachments": _attachments(msg.get("payload") or {}),
                     "link": f"https://mail.google.com/mail/u/0/#all/{msg['id']}"})
     return out
+
+
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024   # Telegram's sendDocument limit for bots is 50 MB; 20 is plenty
+
+
+def message_attachments(user_id: int, gmail_id: str) -> list[dict]:
+    """The attachment list of one message, fetched fresh (nothing about
+    attachments is stored)."""
+    token = access_token(user_id)
+    status, msg = _get(f"{GMAIL_URL}/messages/{gmail_id}", params={"format": "full"},
+                       headers={"Authorization": f"Bearer {token}"})
+    if status != 200:
+        raise GoogleError(f"gmail get: HTTP {status}")
+    return _attachments(msg.get("payload") or {})
+
+
+def download_attachment(user_id: int, gmail_id: str, attachment_id: str) -> bytes:
+    token = access_token(user_id)
+    status, body = _get(f"{GMAIL_URL}/messages/{gmail_id}/attachments/{attachment_id}",
+                        headers={"Authorization": f"Bearer {token}"})
+    if status != 200 or not body.get("data"):
+        raise GoogleError(f"gmail attachment: HTTP {status}")
+    data = body["data"]
+    raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    if len(raw) > MAX_ATTACHMENT_BYTES:
+        raise GoogleError(f"attachment too large ({len(raw) // 1024 // 1024} MB)")
+    return raw
 
 
 def range_for(phrase: str, now: datetime, tz: str) -> tuple[datetime, datetime] | None:

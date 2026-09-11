@@ -89,6 +89,8 @@ REGISTRY: list[Tool] = [
     calendar.CALENDAR_CREATE,
     mail.MAIL_SEARCH,
     mail.MAIL_READ_BODY,
+    mail.MAIL_SEND_ATTACHMENT,
+    mail.MAIL_EXTRACT_TRIP,
     preferences.PREFERENCE_SET,
     preferences.PREFERENCE_DELETE,
     preferences.MEMORY_SHOW,

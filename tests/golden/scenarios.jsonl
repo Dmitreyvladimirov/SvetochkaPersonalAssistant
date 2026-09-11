@@ -61,3 +61,5 @@
 {"message": "найди билет на вечеринку, что-то типа Synergy", "expect_tools": ["mail_search"], "forbid_tools": ["note_search", "mail_read_body"]}
 {"message": "когда у меня самолёт?", "expect_tools_any": ["mail_search", "calendar_query"], "forbid_tools": ["note_save"]}
 {"message": "напомни в пятницу в 10 про отчёт и поставь это в календарь", "expect_tools": ["reminder_create", "calendar_create"], "forbid_tools": ["note_save"]}
+{"message": "пришли мне билет в чат, занеси перелёты в календарь и напомни за день до вылета", "expect_tools": ["mail_search"], "forbid_tools": ["note_save", "mail_read_body"]}
+{"message": "скинь PDF с билетом из письма Air Europa", "expect_tools": ["mail_search"], "forbid_tools": ["note_save", "mail_read_body"]}

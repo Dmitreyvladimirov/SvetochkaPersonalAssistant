@@ -68,11 +68,16 @@ def _plan(scope: UserScope, args: dict) -> tuple[str, datetime, datetime] | str:
         return "Error: title is empty."
     if not when:
         return "Error: when is empty — ask the user for a date and time."
+    tz = str(args.get("tz") or "").strip() or scope.tz    # a flight leaves at the airport's time
+    try:
+        ZoneInfo(tz)
+    except Exception:  # noqa: BLE001
+        return f"Error: unknown time zone {tz!r}; pass an IANA name like Europe/Madrid or empty string."
     now = _now()
-    start = timeparse.parse(when, now=now, tz=scope.tz)
+    start = timeparse.parse(when, now=now, tz=tz)
     if start is None:
         return f"Error: could not understand the time {when!r}; ask the user to rephrase."
-    if start <= now.astimezone(ZoneInfo(scope.tz)):
+    if start <= now.astimezone(ZoneInfo(tz)):
         return f"Error: {timeparse.fmt(start)} is in the past; nothing proposed."
     duration = max(5, min(duration, 24 * 60))
     return title, start, start + timedelta(minutes=duration)
@@ -91,7 +96,8 @@ def describe(scope: UserScope, args: dict) -> str:
         return plan
     title, start, end = plan
     args["start_iso"], args["end_iso"], args["title"] = start.isoformat(), end.isoformat(), title
-    return f"Создать событие: {title} — {timeparse.fmt(start, _local_now(scope))}–{end:%H:%M}"
+    zone = f" ({start.tzinfo})" if str(start.tzinfo) != scope.tz else ""
+    return f"Создать событие: {title} — {timeparse.fmt(start, _local_now(scope))}–{end:%H:%M}{zone}"
 
 
 def execute(scope: UserScope, args: dict) -> str:
@@ -131,6 +137,7 @@ CALENDAR_CREATE = Tool(
             "when": {"type": "string", "description": "The time phrase exactly as the user said it."},
             "duration_min": {"type": "integer", "description": "Duration in minutes; 60 if not said."},
             "description": {"type": "string", "description": "Extra details or empty string."},
+            "tz": {"type": "string", "description": "IANA time zone of the event when it differs from the user's (a flight: the departure airport's zone, e.g. Europe/Madrid — mail_extract_trip gives it), else empty string."},
         },
     },
     fn=lambda scope, ctx, **kw: "Error: calendar_create runs only from the confirm button.",

@@ -6,14 +6,18 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sveta import playbooks
-from sveta.core import crypto, db, google
+from sveta.core import airports, config, crypto, db, google, llm, telegram, timeparse
 from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import Tool
 
 
 def _fmt(m: dict, tz: str) -> str:
     when = m["received_at"].astimezone(ZoneInfo(tz)).strftime("%d.%m %H:%M") if m.get("received_at") else "—"
-    return f"- [{m['gmail_id']}] {when} · {m.get('sender') or '?'} · {m.get('subject') or '(без темы)'}\n  {(m.get('snippet') or '')[:200]}"
+    line = f"- [{m['gmail_id']}] {when} · {m.get('sender') or '?'} · {m.get('subject') or '(без темы)'}\n  {(m.get('snippet') or '')[:200]}"
+    files = m.get("attachments") or []
+    if files:
+        line += "\n  📎 " + ", ".join(f"{a['filename']} ({max(1, a['size'] // 1024)} KB)" for a in files[:6])
+    return line
 
 
 def _search(scope: UserScope, ctx: ToolContext, query: str) -> str:
@@ -45,8 +49,9 @@ MAIL_SEARCH = Tool(
     name="mail_search",
     description=("Search the user's Gmail. Pass a Gmail-style query built from the user's words "
                  "(e.g. 'билет Synergy', 'from:booking.com', 'посадочный talon newer_than:30d'). "
-                 "Returns subject, sender, date and snippet — never the body. Use for 'найди "
-                 "письмо/билет', 'когда у меня самолёт', 'что писал X'."),
+                 "Returns subject, sender, date, snippet and the attachment names (📎) — never the "
+                 "body. Use for 'найди письмо/билет', 'когда у меня самолёт', 'что писал X'. For "
+                 "tickets: then mail_extract_trip for the flights and mail_send_attachment for the PDF."),
     input_schema={
         "type": "object",
         "properties": {"query": {"type": "string", "description": "Gmail search query."}},
@@ -92,4 +97,165 @@ MAIL_READ_BODY = Tool(
     fn=lambda scope, ctx, **kw: "Error: mail_read_body runs only from the confirm button.",
     needs_confirmation=True,
     describe=describe,
+)
+
+
+# --- Attachments (a ticket PDF into the chat) ------------------------------------
+
+def _send_attachment(scope: UserScope, ctx: ToolContext, gmail_id: str, filename: str) -> str:
+    """The file goes to the user's own chat and never to the model, so no card is
+    needed (§8 protects bodies from the model; NFR-8 is kept: own chat only)."""
+    gmail_id, filename = (gmail_id or "").strip(), (filename or "").strip()
+    if not gmail_id:
+        return "Error: gmail_id is empty; call mail_search first."
+    try:
+        files = google.message_attachments(scope.user_id, gmail_id)
+    except google.NotConnected as e:
+        return f"Error: {e}"
+    except google.GoogleError as e:
+        return f"Error: mail unavailable ({e})."
+    if not files:
+        return "This message has no attachments."
+    chosen = None
+    if filename:
+        chosen = next((f for f in files if f["filename"].lower() == filename.lower()), None) or \
+                 next((f for f in files if filename.lower() in f["filename"].lower()), None)
+    elif len(files) == 1:
+        chosen = files[0]
+    if not chosen:
+        return "Which one? Attachments: " + ", ".join(f["filename"] for f in files)
+    try:
+        data = google.download_attachment(scope.user_id, gmail_id, chosen["attachment_id"])
+    except google.GoogleError as e:
+        return f"Error: could not download {chosen['filename']} ({e})."
+    message_id = telegram.send_document(scope.chat_id, chosen["filename"], data,
+                                        caption=f"📎 {chosen['filename']}")
+    if message_id is None:
+        return f"Error: Telegram did not accept {chosen['filename']}."
+    return f"Sent {chosen['filename']} ({len(data) // 1024} KB) to the chat. Do not describe its contents; say it is above."
+
+
+MAIL_SEND_ATTACHMENT = Tool(
+    name="mail_send_attachment",
+    description=("Send an attachment of a found message (a ticket PDF, a boarding pass, an invoice) "
+                 "into the chat as a file the user can open and show. filename from the 📎 list of "
+                 "mail_search, or empty string when the message has exactly one attachment."),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "gmail_id": {"type": "string", "description": "The id in brackets from mail_search."},
+            "filename": {"type": "string", "description": "The attachment name, or empty string for the only one."},
+        },
+    },
+    fn=_send_attachment,
+)
+
+
+# --- Trip extraction (structured legs, not the body) --------------------------------
+
+_EXTRACT_SYSTEM = (
+    "Ты извлекаешь данные о перелётах из письма авиакомпании или агентства. Верни ТОЛЬКО JSON вида "
+    '{"pnr": "локатор или null", "passengers": ["имена"], "legs": [{"flight": "UX1301", "from_iata": "TLV", '
+    '"from_city": "Тель-Авив", "to_iata": "MAD", "to_city": "Мадрид", "date": "2026-09-20", '
+    '"depart": "07:40", "arrive": "11:55", "arrive_date": "2026-09-20"}]}. '
+    "Даты в ISO (YYYY-MM-DD), время местное для аэропорта в формате HH:MM, 24 часа. Если чего-то нет — null. "
+    "Ничего не выдумывай и не добавляй текст вокруг JSON."
+)
+
+
+def _extract_trip(scope: UserScope, ctx: ToolContext, gmail_id: str) -> str:
+    gmail_id = (gmail_id or "").strip()
+    row = db.get_mail_message(scope.user_id, gmail_id) if gmail_id else None
+    if not row:
+        return "Error: unknown message id; call mail_search first."
+    if not row.get("body_enc"):
+        return "Error: this message has no text to read."
+    try:
+        body = crypto.decrypt(row["body_enc"])
+    except Exception:  # noqa: BLE001
+        return "Error: could not decrypt the message."
+    try:
+        llm.check_budget(scope.user_id)
+        client = llm.client()
+        with llm.Timer() as t:
+            response = client.messages.create(model=config.CHEAP_MODEL, max_tokens=1200, system=_EXTRACT_SYSTEM,
+                                              messages=[{"role": "user", "content": body[:12000]}])
+        usage = llm.usage_of(response)
+        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "extract", config.CHEAP_MODEL, usage,
+                           llm.price(config.CHEAP_MODEL, usage), t.ms)
+        text = "".join(b.text for b in response.content if b.type == "text")
+        data = _json_object(text)
+    except llm.BudgetExceeded as e:
+        return f"Error: daily budget exhausted ({e})."
+    except Exception as e:  # noqa: BLE001
+        return f"Error: extraction failed ({type(e).__name__})."
+    legs = [l for l in (data or {}).get("legs") or [] if isinstance(l, dict) and l.get("date")]
+    if not legs:
+        return "No flights found in this message. Try the other message (the e-ticket, not the receipt)."
+    return _render_legs(scope, data, legs)
+
+
+def _json_object(text: str) -> dict | None:
+    import json
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < 0:
+        return None
+    try:
+        return json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+
+
+def _render_legs(scope: UserScope, data: dict, legs: list[dict]) -> str:
+    """Each leg with the exact phrases the next tools take verbatim: calendar
+    'when' + 'tz', and the reminder 'when' for the day before (09:00 local)."""
+    from datetime import datetime, timedelta
+    lines = [f"{len(legs)} flight(s)" + (f", PNR {data.get('pnr')}" if data.get("pnr") else "") + ":"]
+    for n, leg in enumerate(legs, 1):
+        try:
+            day = datetime.strptime(leg["date"], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+        depart = (leg.get("depart") or "09:00")[:5]
+        arrive = (leg.get("arrive") or "")[:5]
+        tz = airports.tz_for(leg.get("from_iata") or "") or scope.tz
+        tz_note = "" if airports.tz_for(leg.get("from_iata") or "") else " (зона аэропорта неизвестна, взята твоя)"
+        duration = _duration_min(leg, depart, arrive)
+        title = f"✈️ {leg.get('flight') or 'рейс'} {leg.get('from_city') or leg.get('from_iata') or '?'} → {leg.get('to_city') or leg.get('to_iata') or '?'}"
+        before = (day - timedelta(days=1)).strftime("%d.%m.%Y")
+        lines.append(
+            f"{n}. {title}: {day:%d.%m.%Y} {depart}–{arrive or '?'} local{tz_note}\n"
+            f"   calendar_create(title=\"{title}\", when=\"{day:%d.%m.%Y} в {depart}\", duration_min={duration}, tz=\"{tz}\")\n"
+            f"   reminder_create(text=\"завтра вылет {leg.get('flight') or ''} {leg.get('from_iata') or ''}→{leg.get('to_iata') or ''}\", when=\"{before} в 09:00\")")
+    lines.append("Propose ONE calendar_create per leg (the user confirms all with one button) and, if asked, "
+                 "the reminder(s) with the phrases above verbatim.")
+    return "\n".join(lines)
+
+
+def _duration_min(leg: dict, depart: str, arrive: str) -> int:
+    from datetime import datetime
+    try:
+        d = datetime.strptime(depart, "%H:%M")
+        a = datetime.strptime(arrive, "%H:%M")
+    except (ValueError, TypeError):
+        return 180
+    minutes = (a.hour * 60 + a.minute) - (d.hour * 60 + d.minute)
+    if leg.get("arrive_date") and leg.get("arrive_date") != leg.get("date"):
+        minutes += 24 * 60
+    # Local-time arithmetic ignores the zone change; a flight is never shorter than 30 min.
+    return max(30, min(minutes if minutes > 0 else minutes + 24 * 60, 20 * 60))
+
+
+MAIL_EXTRACT_TRIP = Tool(
+    name="mail_extract_trip",
+    description=("Extract the flights (legs, dates, local times, PNR) from a found ticket or booking "
+                 "message. Returns ready-made calendar_create and reminder_create calls per leg — "
+                 "pass those phrases verbatim. Use after mail_search when the user wants flights in "
+                 "the calendar, a reminder before departure, or the itinerary summarised. Prefer the "
+                 "e-ticket message over the payment receipt."),
+    input_schema={
+        "type": "object",
+        "properties": {"gmail_id": {"type": "string", "description": "The id in brackets from mail_search."}},
+    },
+    fn=_extract_trip,
 )

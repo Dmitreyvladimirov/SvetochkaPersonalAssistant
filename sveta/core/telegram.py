@@ -36,6 +36,23 @@ def edit_message(message_id: int, text: str, chat_id, reply_markup: dict | None 
     _call("editMessageText", body)
 
 
+def send_document(chat_id, filename: str, data: bytes, caption: str = "") -> int | None:
+    """A file into the user's own chat (a ticket PDF from mail). Multipart, so
+    httpx rather than the urllib JSON helper. Returns the message_id or None."""
+    try:
+        import httpx
+        r = httpx.post(f"{_api()}/sendDocument",
+                       data={"chat_id": str(chat_id), "caption": caption[:1000]},
+                       files={"document": (filename, data)}, timeout=60.0)
+        result = r.json().get("result") if r.status_code == 200 else None
+        if result is None:
+            logger.error("telegram: sendDocument failed: HTTP %s", r.status_code)
+        return (result or {}).get("message_id")
+    except Exception as e:  # noqa: BLE001
+        logger.error("telegram: sendDocument failed: %s", e)
+        return None
+
+
 def edit_reply_markup(message_id: int, chat_id, reply_markup: dict | None) -> None:
     """Swap only the buttons under a message — what a checkbox tap does (FR-49)."""
     _call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": message_id,
