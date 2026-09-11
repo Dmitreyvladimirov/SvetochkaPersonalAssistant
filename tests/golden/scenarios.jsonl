@@ -73,3 +73,5 @@
 {"message": "когда мой рейс в Боготу?", "expect_tools": ["mail_search"], "expect_reply": ["7PVOQO"]}
 {"message": "найди счёт за электричество", "expect_tools": ["mail_search"], "expect_reply": ["312"]}
 {"message": "что мне писал Костя?", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
+{"message": "когда я был у врача?", "expect_tools": ["calendar_query"], "expect_reply": ["врача"], "forbid_tools": ["note_search"]}
+{"message": "когда у меня встреча с Артёмом?", "expect_tools": ["calendar_query"], "expect_reply": ["Артём"]}

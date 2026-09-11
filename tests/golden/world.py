@@ -55,6 +55,11 @@ EVENTS = [
      "end": NOW + timedelta(hours=5), "link": "https://cal/e1", "all_day": False, "location": "Zoom"},
     {"id": "e2", "summary": "Встреча с Артёмом", "start": NOW + timedelta(days=3, hours=2),
      "end": NOW + timedelta(days=3, hours=3), "link": "https://cal/e2", "all_day": False, "location": None},
+    # Already happened, and written with "е" where the question will say "ё":
+    # "когда я был у врача" is answered by silence unless the search looks behind.
+    {"id": "e3", "summary": "Приём у врача, Петрова", "start": NOW - timedelta(days=26),
+     "end": NOW - timedelta(days=26) + timedelta(hours=1), "link": "https://cal/e3",
+     "all_day": False, "location": "Клалит, Дизенгоф 50"},
 ]
 
 

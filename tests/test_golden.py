@@ -63,6 +63,9 @@ def test_the_golden_world_answers_the_tools(monkeypatch):
     assert "Google не подключён" not in out
     events = run(REGISTRY, "calendar_query", scope, ToolContext(), {"period": "", "query": ""})
     assert "Созвон с Костей" in events
+    # Behind, and spelled the other way: the ladder has to climb to reach it.
+    past = run(REGISTRY, "calendar_query", scope, ToolContext(), {"period": "", "query": "приём"})
+    assert "Приём у врача" in past
 
 
 # Errors that make every remaining scenario meaningless: the run stops on these
