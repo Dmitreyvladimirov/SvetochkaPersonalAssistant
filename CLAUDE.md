@@ -163,9 +163,11 @@ use the MCP for `/health` and logs from there.
 - **Not done in the run, needs Dimitry (morning list):**
   1. ~~Anthropic credit balance~~ — topped up by Dimitry during the run; the
      probe passed at 07:20 UTC. FR-39 now names an empty balance in the chat.
-  2. **Golden set: 97% (63/65) on `claude-sonnet-5`** after the ticket work
-     (2026-09-12 13:00 UTC; 97% (61/63) after stage 3, 96% (55/57) after stages
-     2–5). The two misses are the stage-1 pair: a message with two intents. A run costs ~$1.6 and
+  2. **Golden set: 97% (63/65) on `claude-sonnet-5`** after the ticket work and its
+     review fixes (2026-09-12 15:10 UTC; 98% (64/65) on the run before them, 97%
+     (61/63) after stage 3, 96% (55/57) after stages 2–5). The misses are the
+     stage-1 pair — a message with two intents — and they come and go between runs
+     at the same threshold; treat a single run as ±1 scenario, not as a trend. A run costs ~$1.6 and
      is exempt from the per-user daily limit inside the test. Both misses are the stage-1 pair (a two-intent message
      where the model does one thing). The first run after the top-up found a
      production bug: with 19 strict tools the API answers 400 "Schema is too
