@@ -26,4 +26,8 @@ class ToolContext:
     Nothing here reaches the database by itself."""
     inbox_item_id: int | None = None
     created_note_ids: list[int] = field(default_factory=list)
+    created_reminder_ids: list[int] = field(default_factory=list)
+    created_list_item_ids: list[int] = field(default_factory=list)
+    # Set by a list tool when the reply should carry the checkbox keyboard (FR-49).
+    render_list_id: int | None = None
     suggestions: list[dict] = field(default_factory=list)

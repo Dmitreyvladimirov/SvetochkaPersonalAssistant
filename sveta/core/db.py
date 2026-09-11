@@ -460,8 +460,9 @@ def recent_exchanges(user_id: int, limit: int = 8) -> list[dict]:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT raw_text, reply_text FROM inbox_items
-                       WHERE user_id = %s AND raw_text IS NOT NULL AND reply_text IS NOT NULL
+                    """SELECT COALESCE(raw_text, transcript) AS raw_text, reply_text FROM inbox_items
+                       WHERE user_id = %s AND COALESCE(raw_text, transcript) IS NOT NULL
+                         AND reply_text IS NOT NULL
                        ORDER BY id DESC LIMIT %s""",
                     (user_id, limit),
                 )
@@ -654,5 +655,301 @@ def spend_today(user_id: int) -> float:
                             "WHERE user_id = %s AND created_at >= date_trunc('day', NOW())",
                             (user_id,))
                 return float(cur.fetchone()["total"])
+    finally:
+        conn.close()
+
+
+# --- Lists (FR-47…52) --------------------------------------------------------
+# Names match case-insensitively on the trimmed text so "покупки", "Покупки" and
+# "ПОКУПКИ " are one list. The stored name keeps the first spelling.
+
+def find_list(user_id: int, name: str) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, kind FROM lists "
+                            "WHERE user_id = %s AND lower(name) = lower(%s)",
+                            (user_id, name.strip()))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_or_create_list(user_id: int, name: str) -> dict:
+    found = find_list(user_id, name)
+    if found:
+        return found
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO lists (user_id, name) VALUES (%s, %s) "
+                            "ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name "
+                            "RETURNING id, name, kind", (user_id, name.strip()))
+                return dict(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def get_list(user_id: int, list_id: int) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, kind FROM lists WHERE id = %s AND user_id = %s",
+                            (list_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_lists(user_id: int) -> list[dict]:
+    """Every list with its line counts, most recently touched first."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT l.id, l.name,
+                              count(i.id) AS total,
+                              count(i.id) FILTER (WHERE i.checked_at IS NULL) AS unchecked
+                       FROM lists l LEFT JOIN list_items i ON i.list_id = l.id
+                       WHERE l.user_id = %s
+                       GROUP BY l.id ORDER BY max(i.created_at) DESC NULLS LAST, l.id""",
+                    (user_id,))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def add_list_items(user_id: int, list_id: int, texts: list[str]) -> list[int]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(MAX(position), 0) AS p FROM list_items "
+                            "WHERE list_id = %s AND user_id = %s", (list_id, user_id))
+                position = int(cur.fetchone()["p"])
+                ids = []
+                for text in texts:
+                    position += 1
+                    cur.execute("INSERT INTO list_items (user_id, list_id, text, position) "
+                                "VALUES (%s, %s, %s, %s) RETURNING id",
+                                (user_id, list_id, text, position))
+                    ids.append(cur.fetchone()["id"])
+                return ids
+    finally:
+        conn.close()
+
+
+def list_items(user_id: int, list_id: int) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, list_id, text, position, checked_at FROM list_items "
+                            "WHERE list_id = %s AND user_id = %s ORDER BY position, id",
+                            (list_id, user_id))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_list_item_checked(user_id: int, item_id: int, checked: bool | None) -> dict | None:
+    """checked=None toggles. Returns the updated row (with list_id) or None if the
+    line is not this user's."""
+    if checked is None:
+        expr = "CASE WHEN checked_at IS NULL THEN NOW() ELSE NULL END"
+    elif checked:
+        expr = "NOW()"
+    else:
+        expr = "NULL"
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""UPDATE list_items SET checked_at = {expr}
+                        WHERE id = %s AND user_id = %s
+                        RETURNING id, list_id, text, position, checked_at""",
+                    (item_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_list_item(user_id: int, item_id: int) -> bool:
+    """The "Не туда" button for a list line. Hard delete: a line is a few words the
+    user typed a minute ago, and moved_from history only matters for moves."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM list_items WHERE id = %s AND user_id = %s",
+                            (item_id, user_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def move_list_item(user_id: int, item_id: int, to_list_id: int) -> bool:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(MAX(position), 0) AS p FROM list_items "
+                            "WHERE list_id = %s AND user_id = %s", (to_list_id, user_id))
+                position = int(cur.fetchone()["p"]) + 1
+                cur.execute(
+                    """UPDATE list_items SET moved_from = list_id, list_id = %s, position = %s
+                       WHERE id = %s AND user_id = %s AND list_id <> %s""",
+                    (to_list_id, position, item_id, user_id, to_list_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def unchecked_list_items(user_id: int, list_name: str) -> list[dict]:
+    """What the brief and the evening review read (FR-50)."""
+    found = find_list(user_id, list_name)
+    if not found:
+        return []
+    return [i for i in list_items(user_id, found["id"]) if i["checked_at"] is None]
+
+
+# --- Reminders (FR-19…23) ----------------------------------------------------
+
+def create_reminder(user_id: int, text: str, fire_at, tz: str, dedup_key: str,
+                    inbox_item_id: int | None = None) -> tuple[int, bool]:
+    """Returns (id, created). created=False means the same reminder already exists
+    (FR-22) and the id is the existing row's."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO reminders (user_id, inbox_item_id, text, fire_at, tz, dedup_key)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (user_id, dedup_key) DO NOTHING RETURNING id""",
+                    (user_id, inbox_item_id, text, fire_at, tz, dedup_key))
+                row = cur.fetchone()
+                if row:
+                    return row["id"], True
+                cur.execute("SELECT id FROM reminders WHERE user_id = %s AND dedup_key = %s",
+                            (user_id, dedup_key))
+                return cur.fetchone()["id"], False
+    finally:
+        conn.close()
+
+
+def list_reminders(user_id: int, *, status: str = "scheduled", limit: int = 20) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, text, fire_at, tz, status FROM reminders "
+                            "WHERE user_id = %s AND status = %s ORDER BY fire_at LIMIT %s",
+                            (user_id, status, limit))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_reminder(user_id: int, reminder_id: int) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, text, fire_at, tz, status FROM reminders "
+                            "WHERE id = %s AND user_id = %s", (reminder_id, user_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def set_reminder_status(user_id: int, reminder_id: int, status: str, fire_at=None) -> bool:
+    """done / cancelled, or scheduled again with a new fire_at (snooze, tomorrow).
+    The dedup_key stays, so the snoozed reminder still counts as the same one."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE reminders
+                       SET status = %s, fire_at = COALESCE(%s, fire_at),
+                           sent_at = CASE WHEN %s = 'scheduled' THEN NULL ELSE sent_at END
+                       WHERE id = %s AND user_id = %s""",
+                    (status, fire_at, status, reminder_id, user_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def deliver_due_reminders(deliver, *, limit: int = 20) -> int:
+    """The tick's only query (§7). Locks due rows with SKIP LOCKED so two web
+    replicas never send the same reminder; calls deliver(row) for each while the
+    lock is held and marks 'sent' only when it returned True — a Telegram outage
+    leaves the row scheduled for the next tick. Returns how many were sent."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT r.id, r.user_id, r.text, r.fire_at, r.tz, u.telegram_chat_id
+                       FROM reminders r JOIN users u ON u.id = r.user_id
+                       WHERE r.status = 'scheduled' AND r.fire_at <= NOW()
+                       ORDER BY r.fire_at LIMIT %s
+                       FOR UPDATE OF r SKIP LOCKED""",
+                    (limit,))
+                rows = [dict(r) for r in cur.fetchall()]
+                sent = 0
+                for row in rows:
+                    if deliver(row):
+                        cur.execute("UPDATE reminders SET status = 'sent', sent_at = NOW() WHERE id = %s",
+                                    (row["id"],))
+                        sent += 1
+                return sent
+    finally:
+        conn.close()
+
+
+# --- Links (FR-11, FR-12) ----------------------------------------------------
+
+def create_link(user_id: int, url: str, *, inbox_item_id: int | None = None,
+                final_url: str | None = None, http_status: int | None = None,
+                title: str | None = None, summary: str | None = None,
+                fetch_error: str | None = None) -> int:
+    """Every fetch attempt leaves a row, successful or not (FR-11: a 404 is
+    recorded)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO links (user_id, inbox_item_id, url, final_url, http_status,
+                                          title, summary, fetched_at, fetch_error)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s) RETURNING id""",
+                    (user_id, inbox_item_id, url, final_url, http_status, title, summary, fetch_error))
+                return cur.fetchone()["id"]
+    finally:
+        conn.close()
+
+
+# --- Voice (FR-16) -----------------------------------------------------------
+
+def set_transcript(item_id: int, transcript: str) -> None:
+    """The transcript is the item's text from here on: raw_text stays NULL (the raw
+    thing was audio), and recent_exchanges reads COALESCE(raw_text, transcript)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE inbox_items SET transcript = %s WHERE id = %s",
+                            (transcript, item_id))
     finally:
         conn.close()

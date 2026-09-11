@@ -11,11 +11,12 @@ Two rules, both from SPEC.md:
 import os
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-except ImportError:
-    pass  # not installed on Railway, where variables are set directly
+if not os.environ.get("SVETA_SKIP_DOTENV"):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    except ImportError:
+        pass  # not installed on Railway, where variables are set directly
 
 
 def _env(*names: str, default: str = "") -> str:

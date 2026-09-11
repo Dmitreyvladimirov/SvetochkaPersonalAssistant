@@ -15,6 +15,10 @@ class FakeDB:
         self.prefs = {}            # (user_id, key) -> value
         self.corrections = []
         self.llm_calls = []
+        self.lists = {}            # id -> row
+        self.list_items = {}       # id -> row
+        self.reminders = {}        # id -> row
+        self.links = {}            # id -> row
         self._seq = 0
         self._update_ids = set()
 
@@ -59,8 +63,12 @@ class FakeDB:
 
     def recent_exchanges(self, user_id, limit=8):
         rows = [r for r in self.inbox.values()
-                if r["user_id"] == user_id and r["raw_text"] and r["reply_text"]]
-        return [{"raw_text": r["raw_text"], "reply_text": r["reply_text"]} for r in rows[-limit:]]
+                if r["user_id"] == user_id and (r["raw_text"] or r.get("transcript")) and r["reply_text"]]
+        return [{"raw_text": r["raw_text"] or r.get("transcript"), "reply_text": r["reply_text"]}
+                for r in rows[-limit:]]
+
+    def set_transcript(self, item_id, transcript):
+        self.inbox[item_id]["transcript"] = transcript
 
     # notes
     def create_note(self, user_id, body, *, title=None, tags=None, project=None,
@@ -121,6 +129,131 @@ class FakeDB:
     def spend_today(self, user_id):
         return sum(c["cost_usd"] for c in self.llm_calls if c["user_id"] == user_id)
 
+    # lists
+    def find_list(self, user_id, name):
+        for r in self.lists.values():
+            if r["user_id"] == user_id and r["name"].lower() == name.strip().lower():
+                return {"id": r["id"], "name": r["name"], "kind": r["kind"]}
+        return None
+
+    def get_or_create_list(self, user_id, name):
+        found = self.find_list(user_id, name)
+        if found:
+            return found
+        lid = self._next()
+        self.lists[lid] = {"id": lid, "user_id": user_id, "name": name.strip(), "kind": "custom"}
+        return {"id": lid, "name": name.strip(), "kind": "custom"}
+
+    def get_list(self, user_id, list_id):
+        r = self.lists.get(list_id)
+        return {"id": r["id"], "name": r["name"], "kind": r["kind"]} if r and r["user_id"] == user_id else None
+
+    def list_lists(self, user_id):
+        out = []
+        for l in self.lists.values():
+            if l["user_id"] != user_id:
+                continue
+            items = [i for i in self.list_items.values() if i["list_id"] == l["id"]]
+            out.append({"id": l["id"], "name": l["name"], "total": len(items),
+                        "unchecked": len([i for i in items if i["checked_at"] is None])})
+        return out
+
+    def add_list_items(self, user_id, list_id, texts):
+        if self.lists.get(list_id, {}).get("user_id") != user_id:
+            return []
+        pos = max([i["position"] for i in self.list_items.values() if i["list_id"] == list_id], default=0)
+        ids = []
+        for t in texts:
+            pos += 1
+            iid = self._next()
+            self.list_items[iid] = {"id": iid, "user_id": user_id, "list_id": list_id, "text": t,
+                                    "position": pos, "checked_at": None, "moved_from": None}
+            ids.append(iid)
+        return ids
+
+    def list_items_(self, user_id, list_id):
+        return [dict(i) for i in sorted(self.list_items.values(), key=lambda i: (i["position"], i["id"]))
+                if i["list_id"] == list_id and i["user_id"] == user_id]
+
+    def set_list_item_checked(self, user_id, item_id, checked):
+        r = self.list_items.get(item_id)
+        if not r or r["user_id"] != user_id:
+            return None
+        if checked is None:
+            checked = r["checked_at"] is None
+        r["checked_at"] = datetime.now(timezone.utc) if checked else None
+        return dict(r)
+
+    def delete_list_item(self, user_id, item_id):
+        r = self.list_items.get(item_id)
+        if r and r["user_id"] == user_id:
+            del self.list_items[item_id]
+            return True
+        return False
+
+    def move_list_item(self, user_id, item_id, to_list_id):
+        r = self.list_items.get(item_id)
+        if not r or r["user_id"] != user_id or r["list_id"] == to_list_id:
+            return False
+        r["moved_from"], r["list_id"] = r["list_id"], to_list_id
+        r["position"] = max([i["position"] for i in self.list_items.values() if i["list_id"] == to_list_id], default=0) + 1
+        return True
+
+    def unchecked_list_items(self, user_id, list_name):
+        found = self.find_list(user_id, list_name)
+        return [i for i in self.list_items_(user_id, found["id"]) if i["checked_at"] is None] if found else []
+
+    # reminders
+    def create_reminder(self, user_id, text, fire_at, tz, dedup_key, inbox_item_id=None):
+        for r in self.reminders.values():
+            if r["user_id"] == user_id and r["dedup_key"] == dedup_key:
+                return r["id"], False
+        rid = self._next()
+        self.reminders[rid] = {"id": rid, "user_id": user_id, "text": text, "fire_at": fire_at, "tz": tz,
+                               "dedup_key": dedup_key, "status": "scheduled", "sent_at": None}
+        return rid, True
+
+    def list_reminders(self, user_id, *, status="scheduled", limit=20):
+        rows = [dict(r) for r in self.reminders.values() if r["user_id"] == user_id and r["status"] == status]
+        return sorted(rows, key=lambda r: r["fire_at"])[:limit]
+
+    def get_reminder(self, user_id, reminder_id):
+        r = self.reminders.get(reminder_id)
+        return dict(r) if r and r["user_id"] == user_id else None
+
+    def set_reminder_status(self, user_id, reminder_id, status, fire_at=None):
+        r = self.reminders.get(reminder_id)
+        if not r or r["user_id"] != user_id:
+            return False
+        r["status"] = status
+        if fire_at is not None:
+            r["fire_at"] = fire_at
+        if status == "scheduled":
+            r["sent_at"] = None
+        return True
+
+    def deliver_due_reminders(self, deliver, *, limit=20):
+        now = datetime.now(timezone.utc)
+        due = sorted([r for r in self.reminders.values()
+                      if r["status"] == "scheduled" and r["fire_at"] <= now], key=lambda r: r["fire_at"])[:limit]
+        sent = 0
+        for r in due:
+            chat = next((u["telegram_chat_id"] for u in self.users.values() if u["id"] == r["user_id"]), None)
+            row = dict(r, telegram_chat_id=chat)
+            if deliver(row):
+                r["status"], r["sent_at"] = "sent", now
+                sent += 1
+        return sent
+
+    # links
+    def create_link(self, user_id, url, *, inbox_item_id=None, final_url=None, http_status=None,
+                    title=None, summary=None, fetch_error=None):
+        lid = self._next()
+        self.links[lid] = {"id": lid, "user_id": user_id, "url": url, "final_url": final_url,
+                           "http_status": http_status, "title": title, "summary": summary,
+                           "fetch_error": fetch_error}
+        return lid
+
     # stage-0 API, kept so app tests still work
     def init_db(self):
         pass
@@ -132,7 +265,8 @@ class FakeDB:
         return {"ok": True, "users": len(self.users)}
 
 
-NAMES = [n for n in dir(FakeDB) if not n.startswith("_") and n not in ("add_user",)]
+NAMES = [n for n in dir(FakeDB) if not n.startswith("_") and n not in ("add_user", "list_items_")]
+ALIASES = {"list_items": "list_items_"}  # the dict attribute shadows the method name
 
 
 def install(monkeypatch) -> FakeDB:
@@ -141,4 +275,6 @@ def install(monkeypatch) -> FakeDB:
     fake = FakeDB()
     for name in NAMES:
         monkeypatch.setattr(db, name, getattr(fake, name))
+    for db_name, fake_name in ALIASES.items():
+        monkeypatch.setattr(db, db_name, getattr(fake, fake_name))
     return fake

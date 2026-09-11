@@ -5,6 +5,8 @@ import pytest
 
 
 def _reload(monkeypatch, **env):
+    # A developer's .env must not leak into these tests: config reads it on import.
+    monkeypatch.setenv("SVETA_SKIP_DOTENV", "1")
     for k, v in env.items():
         if v is None:
             monkeypatch.delenv(k, raising=False)
