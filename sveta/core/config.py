@@ -69,6 +69,7 @@ OPENAI_API_KEY = _env("OPENAI_API_KEY", "sveta_openai_api")
 # IDs without date suffixes (SPEC.md §6.1). effort is sent to the agent model only.
 AGENT_MODEL = _env("SVETA_AGENT_MODEL", default="claude-sonnet-5")
 CHEAP_MODEL = _env("SVETA_CHEAP_MODEL", default="claude-haiku-4-5")
+BRIEF_MODEL = _env("SVETA_BRIEF_MODEL", default=AGENT_MODEL)
 TRANSCRIBE_MODEL = _env("SVETA_TRANSCRIBE_MODEL", default="whisper-1")
 
 # Per-user daily ceiling, checked against llm_call before each paid call (FR-38).

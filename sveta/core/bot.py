@@ -34,8 +34,10 @@ HELP = (
     "• списки с галочками: «добавь в покупки молоко и батарейки», «что мне сегодня делать»\n"
     "• запомнить, как с тобой общаться («будь короче», «хватит здороваться»)\n"
     "• предложить следующий шаг кнопкой\n\n"
-    "Пока не умею (в работе): календарь, почта, утренний бриф.\n\n"
-    "/ping — жива ли · /stats — расходы за сегодня · /memory — что помню о тебе"
+    "• утренний бриф и вечерний обзор («бриф в 8» — поменяет время)\n"
+    "• ленты RSS для брифа: /rss add <url>\n\n"
+    "Пока не умею (в работе): календарь, почта, Notion.\n\n"
+    "/ping — жива ли · /stats — расходы · /memory — что помню о тебе · /rss — ленты"
 )
 
 
@@ -101,6 +103,11 @@ def _handle_message(update_id, message: dict) -> None:
         telegram.send_message("Вижу сообщение, но в нём нет текста.", chat_id)
         return
 
+    # FR-15: the message after "Не туда" says where the record should have gone.
+    pending = db.open_correction(scope.user_id)
+    if pending:
+        db.fill_correction(scope.user_id, pending["id"], text[:200])
+
     _process_text(scope, item_id, text, chat_id)
 
 
@@ -122,7 +129,8 @@ def _handle_voice(scope: UserScope, item_id: int, voice: dict, chat_id) -> None:
     except transcribe.TranscriptionError as e:
         logger.error("bot: transcription failed for item %s: %s", item_id, e)
         db.mark_item(item_id, status="new", error=str(e)[:500])
-        _reply(chat_id, progress_id, "Не смогла расшифровать — сохранила, попробую позже.")
+        why = str(e) if "Ключ OpenAI" in str(e) else "Не смогла расшифровать. Голосовое сохранила — пришли ещё раз или напиши текстом."
+        _reply(chat_id, progress_id, why)
         return
     if not transcript:
         reply = "Не разобрала, повтори, пожалуйста."
@@ -130,7 +138,10 @@ def _handle_voice(scope: UserScope, item_id: int, voice: dict, chat_id) -> None:
         _reply(chat_id, progress_id, reply)
         return
 
-    db.set_transcript(item_id, transcript)
+    try:
+        db.set_transcript(item_id, transcript)
+    except Exception:  # noqa: BLE001 — the transcript is still processed and shown
+        logger.exception("bot: set_transcript failed for item %s", item_id)
     prefix = f"«{transcript[:1500]}»\n\n"
     _process_text(scope, item_id, transcript, chat_id, progress_id=progress_id, prefix=prefix)
 
@@ -184,13 +195,19 @@ def _run_agent(scope: UserScope, item_id: int, text: str, chat_id, *,
     except Exception as e:  # noqa: BLE001
         logger.exception("bot: agent failed for item %s", item_id)
         db.mark_item(item_id, status="failed", error=str(e)[:500])
-        _reply(chat_id, progress_id, prefix + "Не смогла разобрать — модель не ответила. Сообщение "
-                                              "сохранила, попробую позже.")
+        why = llm.classify_error(e)   # FR-39: a dead credential is named, not hidden
+        _reply(chat_id, progress_id, prefix + (why or "Не смогла разобрать — модель не ответила. "
+                                                      "Сообщение сохранила, попробую позже."))
         return
 
-    suggestions = result.ctx.suggestions
-    db.mark_item(item_id, status="done", reply_text=result.reply,
-                 suggestions=suggestions if suggestions else None)
+    # Suggestions (FR-43) and a dump proposal (FR-13) share the inbox column:
+    # both are "things that happen only on a tap", kept until tapped.
+    stored = list(result.ctx.suggestions) + list(result.ctx.proposal)
+    try:
+        db.mark_item(item_id, status="done", reply_text=result.reply,
+                     suggestions=stored if stored else None)
+    except Exception:  # noqa: BLE001 — the reply must still replace the placeholder
+        logger.exception("bot: mark_item failed for item %s after a successful run", item_id)
     _reply(chat_id, progress_id, prefix + result.reply, _keyboard(scope, item_id, result.ctx))
 
 
@@ -202,14 +219,61 @@ def _command(scope: UserScope, text: str) -> str:
         return "Жива."
     if cmd == "/stats":
         try:
-            return f"Потрачено сегодня: ${db.spend_today(scope.user_id):.3f} из ${config.DAILY_USD_LIMIT:.2f}"
+            return (f"Потрачено сегодня: ${db.spend_today(scope.user_id):.3f} из ${config.DAILY_USD_LIMIT:.2f}\n"
+                    f"За месяц: ${db.spend_month(scope.user_id):.2f}")
         except Exception:  # noqa: BLE001
             logger.exception("bot: /stats failed")
             return "Счётчик расходов недоступен."
+    if cmd == "/rss":
+        return _rss_command(scope, text.split()[1:])
     if cmd == "/memory":
         from sveta.tools import preferences as prefs_tool
         return prefs_tool.MEMORY_SHOW.fn(scope, ToolContext())
     return "Такой команды нет. /help — что умею."
+
+
+def _rss_command(scope: UserScope, args: list[str]) -> str:
+    """Feed management on the cheap path (docs/stages/stage4.md): /rss, /rss add
+    <url>, /rss rm <n>. Administration, not conversation — no model, no tool."""
+    from sveta.core import fetch
+    from sveta.jobs import rss
+    sources = db.list_sources(scope.user_id)
+    if not args:
+        if not sources:
+            return "Лент пока нет. Добавь: /rss add https://…/feed.xml"
+        lines = ["Ленты:"]
+        for n, s in enumerate(sources, 1):
+            state = "ошибка: " + s["last_error"][:60] if s.get("last_error") else (
+                f"опрошена {s['last_polled_at']:%d.%m %H:%M}" if s.get("last_polled_at") else "ещё не опрашивалась")
+            lines.append(f"{n}. {s.get('title') or s['url']} — {state}")
+        lines.append("/rss add <url> · /rss rm <номер>")
+        return "\n".join(lines)
+    if args[0] == "add" and len(args) >= 2:
+        url = args[1].strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return "Нужен адрес ленты, начиная с http:// или https://."
+        body, _, error = fetch.get_bytes(url)
+        if error:
+            return f"Не смогла открыть ленту: {error}."
+        try:
+            title, items = rss.parse(body, url)
+        except ValueError as e:
+            return f"Это не похоже на RSS/Atom: {e}."
+        if not items:
+            return "Лента открылась, но в ней нет записей — не добавляю."
+        source_id, created = db.add_source(scope.user_id, url, title=title)
+        if not created:
+            return f"Эта лента уже есть: {title or url}."
+        new = db.upsert_source_items(scope.user_id, source_id, items)
+        db.mark_source_polled(source_id, title=title)
+        return f"Добавила ленту «{title or url}», записей сейчас: {new}. Свежее попадёт в утренний бриф."
+    if args[0] == "rm" and len(args) >= 2 and args[1].isdigit():
+        n = int(args[1])
+        if not 1 <= n <= len(sources):
+            return f"Нет ленты с номером {n}. /rss — список."
+        db.delete_source(scope.user_id, sources[n - 1]["id"])
+        return f"Убрала ленту {sources[n - 1].get('title') or sources[n - 1]['url']}."
+    return "Команды: /rss · /rss add <url> · /rss rm <номер>"
 
 
 # --- Keyboards ---------------------------------------------------------------
@@ -239,6 +303,8 @@ def _keyboard(scope: UserScope, item_id: int, ctx: ToolContext) -> dict | None:
         rows.append([{"text": "✖︎ Не туда (убрать из списка)", "callback_data": f"undo:l:{ids}"}])
     if ctx.created_reminder_ids:
         rows.append([{"text": "✖︎ Отменить напоминание", "callback_data": f"undo:r:{ctx.created_reminder_ids[-1]}"}])
+    if ctx.proposal:
+        rows.append([{"text": f"✓ Сохранить все {len(ctx.proposal)}", "callback_data": f"dp:{item_id}"}])
     for n, s in enumerate(ctx.suggestions[:3]):
         rows.append([{"text": s["label"][:40], "callback_data": f"sg:{item_id}:{n}"}])
     return {"inline_keyboard": rows} if rows else None
@@ -274,12 +340,22 @@ def _handle_callback(update_id, callback: dict) -> None:
         _reminder_button(scope, rest, message, chat_id)
         return
 
+    if action == "dg":  # FR-32: a reaction is a quality signal, nothing else happens
+        what, _, id_part = rest.partition(":")
+        if what in ("up", "down") and id_part.isdigit():
+            db.set_digest_reaction(scope.user_id, int(id_part), what)
+        return
+
+    if action == "dp" and rest.isdigit():
+        _save_proposal(scope, int(rest), chat_id)
+        return
+
     if action == "sg":
         item_part, _, n_part = rest.partition(":")
         if not (item_part.isdigit() and n_part.isdigit()):
             return
         item = db.get_item(scope.user_id, int(item_part))
-        suggestions = (item or {}).get("suggestions") or []
+        suggestions = [s for s in ((item or {}).get("suggestions") or []) if s.get("kind", "instruction") == "instruction"]
         n = int(n_part)
         if n >= len(suggestions):
             telegram.send_message("Эта кнопка уже отработала или устарела.", chat_id)
@@ -292,6 +368,31 @@ def _handle_callback(update_id, callback: dict) -> None:
         if new_item is None:
             return
         _run_agent(scope, new_item, instruction, chat_id)
+
+
+def _save_proposal(scope: UserScope, item_id: int, chat_id) -> None:
+    """FR-13: the tap saves every proposed record by code — no second model call,
+    nothing dropped. A second tap finds them saved and says so."""
+    item = db.get_item(scope.user_id, item_id)
+    entries = (item or {}).get("suggestions") or []
+    proposal = [e for e in entries if e.get("kind") == "note"]
+    if not proposal:
+        telegram.send_message("Эта кнопка уже отработала или устарела.", chat_id)
+        return
+    if all(e.get("saved") for e in proposal):
+        telegram.send_message("Эти заметки уже сохранила.", chat_id)
+        return
+    saved_ids = []
+    for e in proposal:
+        if e.get("saved"):
+            continue
+        saved_ids.append(db.create_note(scope.user_id, e["body"], project=e.get("project") or None,
+                                        inbox_item_id=item_id))
+        e["saved"] = True
+    db.mark_item(item_id, status="done", suggestions=entries)
+    ctx = ToolContext(inbox_item_id=item_id, created_note_ids=saved_ids)
+    telegram.send_message(f"Сохранила {len(saved_ids)} заметки." if len(saved_ids) != 1 else "Сохранила заметку.",
+                          chat_id, _keyboard(scope, item_id, ctx))
 
 
 def _toggle_list_line(scope: UserScope, callback_id: str, message: dict, item_id: int) -> None:
@@ -345,6 +446,9 @@ def _reminder_button(scope: UserScope, rest: str, message: dict, chat_id) -> Non
     row = db.get_reminder(scope.user_id, reminder_id)
     if not row:
         telegram.send_message("Это напоминание не найдено.", chat_id)
+        return
+    if row["status"] not in ("sent", "scheduled"):
+        telegram.send_message(f"Это напоминание уже {('закрыто' if row['status'] == 'done' else 'отменено')}.", chat_id)
         return
     message_id = message.get("message_id")
     zone = ZoneInfo(scope.tz)

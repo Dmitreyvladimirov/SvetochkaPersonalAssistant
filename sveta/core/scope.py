@@ -31,3 +31,5 @@ class ToolContext:
     # Set by a list tool when the reply should carry the checkbox keyboard (FR-49).
     render_list_id: int | None = None
     suggestions: list[dict] = field(default_factory=list)
+    # FR-13: records proposed for one-tap confirmation; nothing is written until then.
+    proposal: list[dict] = field(default_factory=list)

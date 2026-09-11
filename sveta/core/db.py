@@ -730,6 +730,9 @@ def add_list_items(user_id: int, list_id: int, texts: list[str]) -> list[int]:
     try:
         with conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM lists WHERE id = %s AND user_id = %s", (list_id, user_id))
+                if not cur.fetchone():
+                    return []
                 cur.execute("SELECT COALESCE(MAX(position), 0) AS p FROM list_items "
                             "WHERE list_id = %s AND user_id = %s", (list_id, user_id))
                 position = int(cur.fetchone()["p"])
@@ -801,6 +804,9 @@ def move_list_item(user_id: int, item_id: int, to_list_id: int) -> bool:
     try:
         with conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM lists WHERE id = %s AND user_id = %s", (to_list_id, user_id))
+                if not cur.fetchone():
+                    return False
                 cur.execute("SELECT COALESCE(MAX(position), 0) AS p FROM list_items "
                             "WHERE list_id = %s AND user_id = %s", (to_list_id, user_id))
                 position = int(cur.fetchone()["p"]) + 1
@@ -831,10 +837,17 @@ def create_reminder(user_id: int, text: str, fire_at, tz: str, dedup_key: str,
     try:
         with conn:
             with conn.cursor() as cur:
+                # A cancelled, done or snoozed twin is resurrected, not reported as
+                # "already set": the user who repeats a request after a mistaken
+                # cancel must get a reminder that fires (§9, review C2).
                 cur.execute(
                     """INSERT INTO reminders (user_id, inbox_item_id, text, fire_at, tz, dedup_key)
                        VALUES (%s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (user_id, dedup_key) DO NOTHING RETURNING id""",
+                       ON CONFLICT (user_id, dedup_key) DO UPDATE
+                           SET status = 'scheduled', fire_at = EXCLUDED.fire_at, sent_at = NULL,
+                               inbox_item_id = EXCLUDED.inbox_item_id
+                           WHERE reminders.status <> 'scheduled'
+                       RETURNING id""",
                     (user_id, inbox_item_id, text, fire_at, tz, dedup_key))
                 row = cur.fetchone()
                 if row:
@@ -951,5 +964,321 @@ def set_transcript(item_id: int, transcript: str) -> None:
             with conn.cursor() as cur:
                 cur.execute("UPDATE inbox_items SET transcript = %s WHERE id = %s",
                             (transcript, item_id))
+    finally:
+        conn.close()
+
+
+# --- Stage 4: users for crons, brief data, digests, RSS ------------------------
+
+def active_users() -> list[dict]:
+    """Every user the crons iterate over (§7: the brief cron iterates over users)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, telegram_chat_id, tz FROM users WHERE status = 'active' ORDER BY id")
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def reminders_between(user_id: int, start, end, *, statuses=("scheduled",)) -> list[dict]:
+    """Reminders with fire_at in [start, end) — the brief's 'today' section."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, text, fire_at, status FROM reminders "
+                            "WHERE user_id = %s AND status = ANY(%s) AND fire_at >= %s AND fire_at < %s "
+                            "ORDER BY fire_at", (user_id, list(statuses), start, end))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def reminders_overdue(user_id: int, before) -> list[dict]:
+    """Delivered before `before` and neither done nor rescheduled (status 'sent')."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, text, fire_at, sent_at FROM reminders "
+                            "WHERE user_id = %s AND status = 'sent' AND sent_at < %s "
+                            "ORDER BY sent_at", (user_id, before))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_digest(user_id: int, kind: str, for_date) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, kind, for_date, payload, tg_message_id, sent_at FROM digests "
+                            "WHERE user_id = %s AND kind = %s AND for_date = %s", (user_id, kind, for_date))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_digest(user_id: int, kind: str, for_date, payload: dict, *, tg_message_id=None,
+                  model: str | None = None, cost_usd: float = 0.0) -> int | None:
+    """None when a digest of this kind already exists for the day (the UNIQUE is
+    the idempotency of the 15-minute cron window)."""
+    import json
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO digests (user_id, kind, for_date, payload, tg_message_id, sent_at, model, cost_usd)
+                       VALUES (%s, %s, %s, %s::jsonb, %s, CASE WHEN %s IS NULL THEN NULL ELSE NOW() END, %s, %s)
+                       ON CONFLICT (user_id, kind, for_date) DO NOTHING RETURNING id""",
+                    (user_id, kind, for_date, json.dumps(payload, ensure_ascii=False, default=str),
+                     tg_message_id, tg_message_id, model, cost_usd))
+                row = cur.fetchone()
+                return row["id"] if row else None
+    finally:
+        conn.close()
+
+
+def set_digest_sent(user_id: int, digest_id: int, tg_message_id: int) -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE digests SET tg_message_id = %s, sent_at = NOW() WHERE id = %s AND user_id = %s",
+                            (tg_message_id, digest_id, user_id))
+    finally:
+        conn.close()
+
+
+def set_digest_reaction(user_id: int, digest_id: int, reaction: str) -> bool:
+    """FR-32: 👍/👎 kept inside payload, no new column."""
+    import json
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE digests SET payload = COALESCE(payload, '{}'::jsonb) || %s::jsonb
+                       WHERE id = %s AND user_id = %s""",
+                    (json.dumps({"reaction": reaction}), digest_id, user_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def list_sources(user_id: int) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, kind, url, title, enabled, last_polled_at, last_error FROM sources "
+                            "WHERE user_id = %s ORDER BY id", (user_id,))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def all_enabled_sources() -> list[dict]:
+    """The ingest cron's list: every user's enabled feeds."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, user_id, kind, url, title, etag FROM sources WHERE enabled ORDER BY id")
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def add_source(user_id: int, url: str, *, kind: str = "rss", title: str | None = None) -> tuple[int, bool]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO sources (user_id, kind, url, title) VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (user_id, url) DO NOTHING RETURNING id""",
+                    (user_id, kind, url, title))
+                row = cur.fetchone()
+                if row:
+                    return row["id"], True
+                cur.execute("SELECT id FROM sources WHERE user_id = %s AND url = %s", (user_id, url))
+                return cur.fetchone()["id"], False
+    finally:
+        conn.close()
+
+
+def delete_source(user_id: int, source_id: int) -> bool:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM sources WHERE id = %s AND user_id = %s", (source_id, user_id))
+                return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def mark_source_polled(source_id: int, *, error: str | None = None, etag: str | None = None,
+                       title: str | None = None) -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE sources SET last_polled_at = NOW(), last_error = %s, "
+                            "etag = COALESCE(%s, etag), title = COALESCE(%s, title) WHERE id = %s",
+                            (error, etag, title, source_id))
+    finally:
+        conn.close()
+
+
+def upsert_source_items(user_id: int, source_id: int, items: list[dict]) -> int:
+    """Insert what is new by (user_id, external_id); returns how many were new."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                new = 0
+                for it in items:
+                    cur.execute(
+                        """INSERT INTO source_items (user_id, source_id, external_id, url, title, summary, published_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (user_id, external_id) DO NOTHING RETURNING id""",
+                        (user_id, source_id, it["external_id"], it.get("url"), it.get("title"),
+                         it.get("summary"), it.get("published_at")))
+                    if cur.fetchone():
+                        new += 1
+                return new
+    finally:
+        conn.close()
+
+
+def recent_source_items(user_id: int, since, *, limit: int = 3) -> list[dict]:
+    """Newest first; published_at falls back to fetched_at for feeds without dates."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT i.id, i.title, i.url, s.title AS source_title,
+                              COALESCE(i.published_at, i.fetched_at) AS published_at
+                       FROM source_items i JOIN sources s ON s.id = i.source_id
+                       WHERE i.user_id = %s AND COALESCE(i.published_at, i.fetched_at) >= %s
+                       ORDER BY COALESCE(i.published_at, i.fetched_at) DESC LIMIT %s""",
+                    (user_id, since, limit))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def spend_month(user_id: int) -> float:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM llm_call "
+                            "WHERE user_id = %s AND created_at >= date_trunc('month', NOW())", (user_id,))
+                return float(cur.fetchone()["total"])
+    finally:
+        conn.close()
+
+
+# --- Stage 5: facts with a validity window, open corrections -------------------
+
+def remember_fact(user_id: int, subject: str, predicate: str, obj: str, *,
+                  source_note_id: int | None = None) -> tuple[int, int]:
+    """Close every open fact with the same (subject, predicate) and insert the new
+    one (FR-45). Returns (new_id, closed_count). The old rows stay, with valid_to."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE facts SET valid_to = NOW()
+                       WHERE user_id = %s AND valid_to IS NULL
+                         AND lower(subject) = lower(%s) AND lower(predicate) = lower(%s)
+                         AND NOT (lower(object) = lower(%s))""",
+                    (user_id, subject, predicate, obj))
+                closed = cur.rowcount
+                cur.execute(
+                    """SELECT id FROM facts WHERE user_id = %s AND valid_to IS NULL
+                         AND lower(subject) = lower(%s) AND lower(predicate) = lower(%s)
+                         AND lower(object) = lower(%s)""",
+                    (user_id, subject, predicate, obj))
+                same = cur.fetchone()
+                if same:
+                    return same["id"], closed
+                cur.execute(
+                    """INSERT INTO facts (user_id, subject, predicate, object, source_note_id)
+                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                    (user_id, subject, predicate, obj, source_note_id))
+                return cur.fetchone()["id"], closed
+    finally:
+        conn.close()
+
+
+def recall_facts(user_id: int, topic: str, *, include_closed: bool = False, limit: int = 20) -> list[dict]:
+    """Open facts whose subject or object mentions the topic; closed ones too when
+    asked (the reply marks them with their valid_to)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT id, subject, predicate, object, valid_from, valid_to FROM facts
+                        WHERE user_id = %s {"" if include_closed else "AND valid_to IS NULL"}
+                          AND (subject ILIKE %s OR object ILIKE %s OR predicate ILIKE %s)
+                        ORDER BY valid_to IS NOT NULL, valid_from DESC LIMIT %s""",
+                    (user_id, f"%{topic}%", f"%{topic}%", f"%{topic}%", limit))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def open_facts(user_id: int, *, limit: int = 50) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, subject, predicate, object, valid_from FROM facts "
+                            "WHERE user_id = %s AND valid_to IS NULL ORDER BY subject, valid_from LIMIT %s",
+                            (user_id, limit))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def open_correction(user_id: int, *, max_age_minutes: int = 15) -> dict | None:
+    """The newest 'Не туда' still waiting for its 'should have' (FR-15)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, did, created_at FROM corrections
+                       WHERE user_id = %s AND should_have IS NULL
+                         AND created_at >= NOW() - make_interval(mins => %s)
+                       ORDER BY id DESC LIMIT 1""",
+                    (user_id, max_age_minutes))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def fill_correction(user_id: int, correction_id: int, should_have: str) -> bool:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE corrections SET should_have = %s "
+                            "WHERE id = %s AND user_id = %s AND should_have IS NULL",
+                            (should_have, correction_id, user_id))
+                return cur.rowcount == 1
     finally:
         conn.close()

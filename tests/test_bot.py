@@ -237,3 +237,13 @@ def test_help_names_the_new_abilities(monkeypatch):
     text = sent.messages[-1][1]
     assert "голосовые" in text and "напомнить" in text and "списки" in text
     assert "голосовые, напоминания" not in text  # no longer in the "не умею" line
+
+
+def test_list_undo_cannot_remove_another_registered_users_line(monkeypatch):
+    fake, sent, client = wire(monkeypatch)
+    fake.add_user("222")
+    lid = fake.get_or_create_list(2, "Их список")["id"]
+    (iid,) = fake.add_list_items(2, lid, ["их строка"])
+    bot.handle_update({"update_id": 2, "callback_query": {"id": "cb", "data": f"undo:l:{iid}",
+                       "message": {"message_id": 1, "chat": {"id": 111}}}})
+    assert iid in fake.list_items and "уже убрала" in sent.messages[-1][1]

@@ -14,11 +14,15 @@ class FakeDB:
         self.notes = {}            # id -> row
         self.prefs = {}            # (user_id, key) -> value
         self.corrections = []
+        self.facts = {}            # id -> row
         self.llm_calls = []
         self.lists = {}            # id -> row
         self.list_items = {}       # id -> row
         self.reminders = {}        # id -> row
         self.links = {}            # id -> row
+        self.digests = {}          # id -> row
+        self.sources = {}          # id -> row
+        self.source_items = {}     # id -> row
         self._seq = 0
         self._update_ids = set()
 
@@ -117,10 +121,52 @@ class FakeDB:
         return {k: v for (u, k), v in sorted(self.prefs.items()) if u == user_id}
 
     def add_correction(self, user_id, inbox_item_id, did, should_have=None):
-        self.corrections.append({"user_id": user_id, "did": did, "should_have": should_have})
+        self.corrections.append({"id": self._next(), "user_id": user_id, "did": did,
+                                 "should_have": should_have, "created_at": datetime.now(timezone.utc)})
 
     def recent_corrections(self, user_id, limit=5):
         return [c for c in self.corrections if c["user_id"] == user_id][-limit:]
+
+    def open_correction(self, user_id, *, max_age_minutes=15):
+        from datetime import timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        for c in reversed(self.corrections):
+            if c["user_id"] == user_id and c["should_have"] is None and c["created_at"] >= cutoff:
+                return dict(c)
+        return None
+
+    def fill_correction(self, user_id, correction_id, should_have):
+        for c in self.corrections:
+            if c["id"] == correction_id and c["user_id"] == user_id and c["should_have"] is None:
+                c["should_have"] = should_have
+                return True
+        return False
+
+    # facts
+    def remember_fact(self, user_id, subject, predicate, obj, *, source_note_id=None):
+        closed = 0
+        for f in self.facts.values():
+            if (f["user_id"] == user_id and f["valid_to"] is None and f["subject"].lower() == subject.lower()
+                    and f["predicate"].lower() == predicate.lower()):
+                if f["object"].lower() == obj.lower():
+                    return f["id"], closed
+                f["valid_to"] = datetime.now(timezone.utc)
+                closed += 1
+        fid = self._next()
+        self.facts[fid] = {"id": fid, "user_id": user_id, "subject": subject, "predicate": predicate,
+                           "object": obj, "valid_from": datetime.now(timezone.utc), "valid_to": None}
+        return fid, closed
+
+    def recall_facts(self, user_id, topic, *, include_closed=False, limit=20):
+        t = topic.lower()
+        rows = [dict(f) for f in self.facts.values() if f["user_id"] == user_id
+                and (include_closed or f["valid_to"] is None)
+                and (t in f["subject"].lower() or t in f["object"].lower() or t in f["predicate"].lower())]
+        return sorted(rows, key=lambda f: (f["valid_to"] is not None, -f["valid_from"].timestamp()))[:limit]
+
+    def open_facts(self, user_id, *, limit=50):
+        return sorted([dict(f) for f in self.facts.values() if f["user_id"] == user_id and f["valid_to"] is None],
+                      key=lambda f: (f["subject"], f["valid_from"]))[:limit]
 
     # cost
     def record_llm_call(self, user_id, inbox_item_id, purpose, model, usage, cost_usd, latency_ms):
@@ -207,6 +253,9 @@ class FakeDB:
     def create_reminder(self, user_id, text, fire_at, tz, dedup_key, inbox_item_id=None):
         for r in self.reminders.values():
             if r["user_id"] == user_id and r["dedup_key"] == dedup_key:
+                if r["status"] != "scheduled":
+                    r.update(status="scheduled", fire_at=fire_at, sent_at=None)
+                    return r["id"], True
                 return r["id"], False
         rid = self._next()
         self.reminders[rid] = {"id": rid, "user_id": user_id, "text": text, "fire_at": fire_at, "tz": tz,
@@ -253,6 +302,110 @@ class FakeDB:
                            "http_status": http_status, "title": title, "summary": summary,
                            "fetch_error": fetch_error}
         return lid
+
+    # stage 4
+    def active_users(self):
+        return [{"id": u["id"], "telegram_chat_id": u["telegram_chat_id"], "tz": u["tz"]}
+                for u in sorted(self.users.values(), key=lambda u: u["id"]) if u["status"] == "active"]
+
+    def reminders_between(self, user_id, start, end, *, statuses=("scheduled",)):
+        rows = [dict(r) for r in self.reminders.values()
+                if r["user_id"] == user_id and r["status"] in statuses and start <= r["fire_at"] < end]
+        return sorted(rows, key=lambda r: r["fire_at"])
+
+    def reminders_overdue(self, user_id, before):
+        rows = [dict(r) for r in self.reminders.values()
+                if r["user_id"] == user_id and r["status"] == "sent" and r["sent_at"] and r["sent_at"] < before]
+        return sorted(rows, key=lambda r: r["sent_at"])
+
+    def get_digest(self, user_id, kind, for_date):
+        for d in self.digests.values():
+            if d["user_id"] == user_id and d["kind"] == kind and d["for_date"] == for_date:
+                return dict(d)
+        return None
+
+    def create_digest(self, user_id, kind, for_date, payload, *, tg_message_id=None, model=None, cost_usd=0.0):
+        if self.get_digest(user_id, kind, for_date):
+            return None
+        did = self._next()
+        self.digests[did] = {"id": did, "user_id": user_id, "kind": kind, "for_date": for_date,
+                             "payload": dict(payload), "tg_message_id": tg_message_id,
+                             "sent_at": datetime.now(timezone.utc) if tg_message_id else None,
+                             "model": model, "cost_usd": cost_usd}
+        return did
+
+    def set_digest_sent(self, user_id, digest_id, tg_message_id):
+        d = self.digests.get(digest_id)
+        if d and d["user_id"] == user_id:
+            d["tg_message_id"], d["sent_at"] = tg_message_id, datetime.now(timezone.utc)
+
+    def set_digest_reaction(self, user_id, digest_id, reaction):
+        d = self.digests.get(digest_id)
+        if not d or d["user_id"] != user_id:
+            return False
+        d["payload"]["reaction"] = reaction
+        return True
+
+    def list_sources(self, user_id):
+        return [dict(s) for s in self.sources.values() if s["user_id"] == user_id]
+
+    def all_enabled_sources(self):
+        return [dict(s) for s in self.sources.values() if s["enabled"]]
+
+    def add_source(self, user_id, url, *, kind="rss", title=None):
+        for s in self.sources.values():
+            if s["user_id"] == user_id and s["url"] == url:
+                return s["id"], False
+        sid = self._next()
+        self.sources[sid] = {"id": sid, "user_id": user_id, "kind": kind, "url": url, "title": title,
+                             "enabled": True, "last_polled_at": None, "last_error": None, "etag": None}
+        return sid, True
+
+    def delete_source(self, user_id, source_id):
+        s = self.sources.get(source_id)
+        if s and s["user_id"] == user_id:
+            del self.sources[source_id]
+            self.source_items = {k: v for k, v in self.source_items.items() if v["source_id"] != source_id}
+            return True
+        return False
+
+    def mark_source_polled(self, source_id, *, error=None, etag=None, title=None):
+        s = self.sources[source_id]
+        s["last_polled_at"] = datetime.now(timezone.utc)
+        s["last_error"] = error
+        if etag:
+            s["etag"] = etag
+        if title:
+            s["title"] = title
+
+    def upsert_source_items(self, user_id, source_id, items):
+        new = 0
+        for it in items:
+            if any(r["user_id"] == user_id and r["external_id"] == it["external_id"] for r in self.source_items.values()):
+                continue
+            iid = self._next()
+            self.source_items[iid] = {"id": iid, "user_id": user_id, "source_id": source_id,
+                                      "external_id": it["external_id"], "url": it.get("url"),
+                                      "title": it.get("title"), "summary": it.get("summary"),
+                                      "published_at": it.get("published_at"),
+                                      "fetched_at": datetime.now(timezone.utc)}
+            new += 1
+        return new
+
+    def recent_source_items(self, user_id, since, *, limit=3):
+        rows = []
+        for r in self.source_items.values():
+            if r["user_id"] != user_id:
+                continue
+            when = r["published_at"] or r["fetched_at"]
+            if when >= since:
+                src = self.sources.get(r["source_id"], {})
+                rows.append({"id": r["id"], "title": r["title"], "url": r["url"],
+                             "source_title": src.get("title"), "published_at": when})
+        return sorted(rows, key=lambda r: r["published_at"], reverse=True)[:limit]
+
+    def spend_month(self, user_id):
+        return self.spend_today(user_id)
 
     # stage-0 API, kept so app tests still work
     def init_db(self):
