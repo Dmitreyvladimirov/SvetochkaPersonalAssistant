@@ -68,12 +68,16 @@ def _memory_show(scope: UserScope, ctx: ToolContext) -> str:
     if corrections:
         lines.append("Recent corrections (did → should have):")
         lines += [f"  {c['did']} → {c.get('should_have') or '?'}" for c in corrections]
+    facts = db.open_facts(scope.user_id)
+    if facts:
+        lines.append("Facts (current):")
+        lines += [f"  {f['subject']} — {f['predicate']} — {f['object']}" for f in facts]
     return "\n".join(lines)
 
 
 MEMORY_SHOW = Tool(
     name="memory_show",
-    description="Everything Svetochka remembers about the user: preferences and recent corrections. Use for 'что ты про меня помнишь?'.",
+    description="Everything Svetochka remembers about the user: preferences, current facts and recent corrections. Use for 'что ты про меня помнишь?'.",
     input_schema={"type": "object", "properties": {}},
     fn=_memory_show,
 )

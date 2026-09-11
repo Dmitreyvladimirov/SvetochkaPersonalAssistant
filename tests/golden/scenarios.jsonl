@@ -1,7 +1,7 @@
 {"message": "запиши: онбординг через шаблоны, а не через пустой холст", "expect_tools": ["note_save"], "forbid_tools": ["preference_set"]}
 {"message": "Светочка, запиши идею для Vespera — сделать реферальный цикл", "expect_tools": ["note_save"], "expect_args": {"note_save": {"project": "Vespera"}}}
 {"message": "мысль: продукт без онбординга не продаётся", "expect_tools": ["note_save"]}
-{"message": "запомни, что Костя отвечает за инфру", "expect_tools": ["note_save"]}
+{"message": "запомни, что Костя отвечает за инфру", "expect_tools_any": ["fact_remember", "note_save"], "forbid_tools": ["preference_set"]}
 {"message": "https://linear.app/blog/how-we-plan — почитать про планирование", "expect_tools": ["link_save"], "forbid_tools": ["note_save"], "expect_args": {"link_save": {"url": "https://linear.app/blog/how-we-plan"}}}
 {"message": "вот ссылка на референс https://www.instagram.com/p/abc123/", "expect_tools": ["note_save"]}
 {"message": "что я писал про Vespera?", "expect_tools": ["note_search"], "forbid_tools": ["note_save"]}
@@ -50,3 +50,8 @@
 {"message": "перенеси батарейки из покупок в большие покупки", "expect_tools_any": ["list_move", "list_show"], "forbid_tools": ["note_save"]}
 {"message": "покажи покупки текстом", "expect_tools": ["list_show"], "expect_args": {"list_show": {"as_text": true}}}
 {"message": "что по этой ссылке? https://www.anthropic.com/news", "expect_tools_any": ["link_fetch", "link_save"], "forbid_tools": ["note_save"]}
+{"message": "врач Светы теперь Петрова, а не Иванова", "expect_tools": ["fact_remember"], "forbid_tools": ["note_save"]}
+{"message": "кто у нас отвечает за инфру?", "expect_tools_any": ["fact_recall", "note_search"], "forbid_tools": ["note_save", "fact_remember"]}
+{"message": "какой врач у Светы?", "expect_tools": ["fact_recall"], "forbid_tools": ["note_save"]}
+{"message": "мысли после созвона: 1) онбординг переделать под шаблоны 2) реферальную программу отложить до весны 3) нанять второго саппорта 4) спросить у Кости про бэкапы", "expect_tools": ["notes_propose"], "forbid_tools": ["note_save"]}
+{"message": "накопилось: переписать лендинг, позвать Машу на демо, проверить цены конкурентов", "expect_tools": ["notes_propose"], "forbid_tools": ["note_save"]}

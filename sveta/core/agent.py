@@ -42,8 +42,23 @@ def system_prompt(scope: UserScope) -> str:
     if prefs:
         lines.append("\nПредпочтения пользователя (действуют всегда):")
         lines += [f"- {k}: {v}" for k, v in sorted(prefs.items())]
+    corrections = _corrections(scope)
+    if corrections:
+        lines.append("\nПрошлые поправки пользователя (учитывай, не повторяй ошибку):")
+        lines += [f"- сделала: {c['did']} → надо было: {c['should_have']}" for c in corrections]
     lines.append(f"\nЧасовой пояс пользователя: {scope.tz}.")
     return "\n".join(lines)
+
+
+def _corrections(scope: UserScope) -> list[dict]:
+    """FR-15: the last pairs that have both halves. Best-effort — a failed read
+    must not stop a reply."""
+    from sveta.core import db
+    try:
+        return [c for c in db.recent_corrections(scope.user_id, limit=5) if c.get("should_have")]
+    except Exception:  # noqa: BLE001
+        logger.exception("agent: corrections load failed")
+        return []
 
 
 def _history_messages(history: list[dict]) -> list[dict]:
