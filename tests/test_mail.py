@@ -189,3 +189,51 @@ def test_the_planner_unfolds_and_falls_back(monkeypatch):
                 raise RuntimeError("down")
     monkeypatch.setattr(mail_tool, "_client", lambda: Dead())
     assert mail_tool._plan_queries(scope, ToolContext(), "билет в Колумбию", "") == (["билет в Колумбию"], ["билет", "Колумбию"])
+
+
+def world(fake, monkeypatch, queries, terms):
+    """The ladder against the same mailbox the golden run uses (tests/golden/world.py),
+    so the fixture and these tests cannot drift apart. The planner is still faked —
+    what a cheap model would emit is the input here, not the thing under test."""
+    from sveta.tools import mail as mail_tool
+    from tests.golden import world as golden_world
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "cs")
+    fake.save_oauth_token(1, "google", "d@x", crypto.encrypt("rt"))
+    monkeypatch.setattr(mail_tool, "_plan_queries", lambda scope, ctx, what, when: (queries, terms))
+    monkeypatch.setattr(google, "search_mail",
+                        lambda uid, q, limit=5: golden_world.search_mail(uid, q, limit=limit))
+
+
+def ask(what, when=""):
+    return run(REGISTRY, "mail_search", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
+               ToolContext(), {"what": what, "when": when})
+
+
+def test_a_ticket_that_never_says_the_country_is_still_found(monkeypatch):
+    """The real Air Europa mail says BOG and Localizador, never 'Колумбия'. A search
+    that only translates the word finds nothing; one that unfolds it finds the ticket."""
+    fake = install(monkeypatch)
+    world(fake, monkeypatch, ["Колумбия", "(Bogota OR BOG) (ticket OR billete)"], ["Bogota", "BOG", "7PVOQO"])
+    out = ask("билеты в Колумбию")
+    assert "[m-col]" in out and "📎 eticket_7PVOQO.pdf" in out
+    assert "NONE of these mentions" not in out
+
+
+def test_the_hebrew_party_ticket_is_found_by_the_broad_rung(monkeypatch):
+    """The ticket is in Hebrew from an Israeli vendor: Russian words reach it only
+    through the sender and the vendor name."""
+    fake = install(monkeypatch)
+    world(fake, monkeypatch, ["вечеринка билет", "כרטיס OR eventim OR party"], ["party", "כרטיס", "eventim"])
+    out = ask("билет на вечеринку", "в эту субботу")
+    assert "[m-party]" in out and "ticket_qr.pdf" in out
+
+
+def test_an_old_ticket_to_another_city_is_not_offered_as_the_answer(monkeypatch):
+    """Asked for Budapest, the mailbox holds only a 2023 London booking — the exact
+    shape of the live miss on 2026-09-12."""
+    fake = install(monkeypatch)
+    world(fake, monkeypatch, ["Budapest OR BUD", "booking OR ticket"], ["Budapest", "Будапешт", "BUD"])
+    out = ask("билеты в Будапешт")
+    assert "[m-london]" in out                                   # it is what the mailbox has
+    assert "NONE of these mentions Budapest" in out and "probably NOT what" in out
