@@ -1,0 +1,6 @@
+# Config for the cron services (digest, ingest). Same image and start command as
+# the web service, but no HTTP healthcheck: a cron run does one pass and exits.
+# Each cron service points at this file via its "Config file path" setting.
+[deploy]
+startCommand = "bash run.sh"
+restartPolicyType = "never"
