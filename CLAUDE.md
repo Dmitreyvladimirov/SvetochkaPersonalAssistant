@@ -195,15 +195,27 @@ use the MCP for `/health` and logs from there.
   reports what it tried (`sveta/tools/mail.py`); and `playbooks/persona.md` said
   "be honest when you find nothing" without ever saying "try harder first".
   Findings: `docs/research/2026-09-12-competence.md`.
+- **The same fix in three more places (spec v0.9, FR-62/FR-63).** `calendar_query`
+  tries both Russian spellings ("Артем" is not found by "Артём") and then the same
+  180 days behind, and a period the parser cannot pin down widens to 30 days
+  instead of erroring — reading is free (§6.2). `note_search` ANDed every word
+  through `plainto_tsquery`, so one extra word in the question found nothing; it
+  now retries the same stemming ORed and says the hits share only some of the
+  words. **The fake DB used to OR always, which made it kinder than the SQL and
+  hid this by construction** — it now ANDs the way Postgres does.
 - **The golden harness measured less than it looked like it did.** It had no
   connected Google, so every mail and calendar scenario answered "не подключён"
   before reaching any query logic, and `_check` never looked at the reply text.
   Both live failures were unprovable in 65 scenarios by construction.
-  `tests/golden/world.py` now seeds a connected account with a deliberately
-  awkward mailbox (the Colombia ticket never says "Colombia", the party ticket is
-  in Hebrew, a 2023 London ticket sits there to be mistaken), scenarios carry
-  `expect_reply` / `forbid_reply`, and `tests/test_mail.py` replays the three live
-  misses against that same mailbox for free.
+  The user's own notes, facts and lists were empty too, so `note_search`,
+  `fact_recall` and `list_show` answered into nothing. `tests/golden/world.py` now
+  seeds all of it: a connected account with a deliberately awkward mailbox (the
+  Colombia ticket never says "Colombia", the party ticket is in Hebrew, a 2023
+  London ticket sits there to be mistaken), a calendar with a past event spelled
+  the other way, and six notes, two facts and two lists worded so a literal search
+  misses. Scenarios carry `expect_reply` / `forbid_reply` (81 of them), and
+  `tests/test_mail.py` replays the three live misses against that same mailbox for
+  free.
 - **Open: the golden set cannot be run.** The Anthropic key hit its workspace
   spend cap on 2026-09-11 mid-run ("You have reached your specified API usage
   limits. You will regain access on 2026-10-01 at 00:00 UTC"), so the 75-scenario
@@ -212,4 +224,4 @@ use the MCP for `/health` and logs from there.
   2026-10-01, then `SVETA_GOLDEN=1 pytest -m golden -q`. The run now stops on a
   dead credential and reports the scenarios it already paid for.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model. 315 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model. 322 tests.
