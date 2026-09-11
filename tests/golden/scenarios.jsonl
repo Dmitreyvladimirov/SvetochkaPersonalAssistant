@@ -31,7 +31,7 @@
 {"message": "мне нравится, когда ты с эмодзи", "expect_tools": ["preference_set"], "forbid_tools": ["note_save"]}
 {"message": "у меня есть идея для проекта Skeptic: проверять факты в резюме", "expect_tools": ["note_save"], "expect_args": {"note_save": {"project": "Skeptic"}}}
 {"message": "ты умеешь ставить напоминания?", "forbid_tools": ["note_save", "preference_set"]}
-{"message": "напомни завтра в 9 позвонить в банк", "forbid_tools": ["preference_set"], "note": "reminders arrive in stage 2; the agent must not fake one as a preference"}
+{"message": "напомни завтра в 9 позвонить в банк", "expect_tools": ["reminder_create"], "forbid_tools": ["preference_set", "note_save"]}
 {"message": "какие у меня заметки с инстаграма?", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["note_save"]}
 {"message": "запиши факт: врач Иванова, приём по вторникам", "expect_tools_any": ["fact_remember", "note_save"], "forbid_tools": ["reminder_create"]}
 {"message": "я передумал, отвечай как раньше, не так коротко", "expect_tools_any": ["preference_set", "preference_delete"], "forbid_tools": ["note_save"]}
@@ -68,3 +68,8 @@
 {"message": "найди счёт за электричество за прошлый месяц", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
 {"message": "пришли мне чек, который я скидывал", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["mail_search"]}
 {"message": "вот скан посадочного", "expect_tools_any": ["note_save"], "forbid_tools": ["reminder_create", "list_add"]}
+{"message": "найди мои билеты в Будапешт", "expect_tools": ["mail_search"], "forbid_reply": ["Лондон", "London", "DDDK6P"], "forbid_tools": ["calendar_create"]}
+{"message": "найди мой билет на вечеринку в эту субботу", "expect_tools": ["mail_search"], "forbid_reply": ["Bilettix", "попробовать другие слова"]}
+{"message": "когда мой рейс в Боготу?", "expect_tools": ["mail_search"], "expect_reply": ["7PVOQO"]}
+{"message": "найди счёт за электричество", "expect_tools": ["mail_search"], "expect_reply": ["312"]}
+{"message": "что мне писал Костя?", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
