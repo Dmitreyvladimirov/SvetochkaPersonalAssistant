@@ -54,6 +54,13 @@ Working notes for Claude Code sessions on Svetochka.
   (= `ANTHROPIC_API_KEY`), `sveta_openai_api` (= `OPENAI_API_KEY`), plus
   `SVETA_ALLOWED_CHAT_IDS`, `SVETA_WEBHOOK_SECRET`, `SVETA_TOKEN_KEY`, `SVETA_TZ`,
   `DATABASE_URL`. Optional: `SVETA_ANTHROPIC_WORKSPACE_ID` (see open items).
+  Stage 3 (2026-09-12): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (an OAuth "Web
+  application" client in GCP project `sodium-wall-331321`, redirect URI
+  `https://sveta-web-production.up.railway.app/oauth/google/callback`, Calendar and
+  Gmail APIs enabled); `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` (a *public* Notion
+  integration, redirect `…/oauth/notion/callback`); `NOTION_TOKEN` is an optional
+  fallback (internal integration). Tokens per user live encrypted in `oauth_tokens`,
+  landed by `/connect` → consent → callback; nobody pastes a token anywhere.
 - Models: `claude-sonnet-5` for the agent and the brief, `claude-haiku-4-5` for
   the cheap path. IDs without date suffixes.
 - Telegram bot: `@dmitreyvladimirovic_bot`. Only Dimitry's chat is registered.
@@ -127,6 +134,15 @@ use the MCP for `/health` and logs from there.
     the next message and into the prompt, `fact_remember` / `fact_recall` with a
     validity window. **FR-14 Notion showcase deferred** — needs a Notion internal
     token from Dimitry.
+- **Stage 3 coded 2026-09-12 with Dimitry online** (`docs/stages/stage3.md`):
+  OAuth for Google and Notion from the chat (`/connect` with URL buttons; the
+  `state` is a one-shot HMAC nonce), calendar read and gated write, mail search
+  with bodies encrypted at rest and a gated `mail_read_body`, the confirmation-card
+  mechanism (§6.2) with atomic taps, the trip playbook as data, notes mirrored to
+  the Notion database "Светочка · Заметки" (created under the project page in
+  Notion). New dependency: `cryptography` (Fernet, §8). Reviewed; the review's
+  criticals and importants are fixed. Live check needs the four OAuth variables
+  in Railway and Dimitry's two consents.
 - **Not done in the run, needs Dimitry (morning list):**
   1. ~~Anthropic credit balance~~ — topped up by Dimitry during the run; the
      probe passed at 07:20 UTC. FR-39 now names an empty balance in the chat.
