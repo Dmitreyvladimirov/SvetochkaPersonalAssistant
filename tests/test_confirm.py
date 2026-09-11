@@ -161,3 +161,56 @@ def test_two_concurrent_taps_run_the_tool_once(monkeypatch):
     for t in threads: t.start()
     for t in threads: t.join()
     assert len(inserted) == 1
+
+
+def test_calendar_tries_both_spellings_and_then_the_past(monkeypatch):
+    """The same one-shot miss mail_search had: an event saved as "Артем" was
+    invisible to a search for "Артём", and a question about the past ("когда я был
+    у врача") was answered by a forward-only window."""
+    from datetime import timedelta
+    from sveta.tools import run
+    fake = install(monkeypatch)
+    connect(fake, monkeypatch)
+    monkeypatch.setattr(calendar_tool, "_now", lambda: NOW)
+    asked = []
+
+    def list_events(uid, start, end, query="", limit=20):
+        behind = end <= NOW          # the past window ends where the forward one starts
+        asked.append((query, behind))
+        if query == "Артем" and behind:
+            return [{"id": "e", "summary": "Обед с Артемом", "start": NOW - timedelta(days=30),
+                     "end": None, "link": "", "all_day": False, "location": None}]
+        return []
+    monkeypatch.setattr(google, "list_events", list_events)
+    out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
+              ToolContext(), {"period": "", "query": "Артём"})
+    assert "Обед с Артемом" in out
+    assert asked[0] == ("Артём", False) and ("Артем", False) in asked   # ahead first, both spellings
+    assert ("Артём", True) in asked                                     # then behind
+
+
+def test_calendar_finding_nothing_says_what_it_tried(monkeypatch):
+    from sveta.tools import run
+    fake = install(monkeypatch)
+    connect(fake, monkeypatch)
+    monkeypatch.setattr(calendar_tool, "_now", lambda: NOW)
+    monkeypatch.setattr(google, "list_events", lambda *a, **k: [])
+    out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
+              ToolContext(), {"period": "", "query": "стоматолог"})
+    assert "No events matching 'стоматолог'" in out and "Tried: стоматолог" in out
+    assert "do NOT offer the user a list of guesses" in out
+
+
+def test_a_plain_period_is_still_one_call(monkeypatch):
+    """Broadening is for a named query; "что у меня завтра" must not silently show
+    events from six months ago."""
+    from sveta.tools import run
+    fake = install(monkeypatch)
+    connect(fake, monkeypatch)
+    monkeypatch.setattr(calendar_tool, "_now", lambda: NOW)
+    calls = []
+    monkeypatch.setattr(google, "list_events",
+                        lambda uid, start, end, query="", limit=20: calls.append(query) or [])
+    out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
+              ToolContext(), {"period": "завтра", "query": ""})
+    assert calls == [""] and "Tried:" not in out

@@ -15,24 +15,57 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _spellings(query: str) -> list[str]:
+    """Google matches calendar text by word, and Russian is written both ways: an
+    event saved as "Артем" is not found by "Артём". One query, two spellings."""
+    out = [query]
+    for swapped in (query.replace("ё", "е"), query.replace("е", "ё")):
+        if swapped != query and swapped not in out:
+            out.append(swapped)
+    return out
+
+
+def _climb(user_id: int, start: datetime, end: datetime, query: str) -> tuple[list[dict], list[str]]:
+    """Both spellings ahead, then the same behind: "когда я был у врача" is a
+    question about the past, and a search that only looks forward answers it with
+    silence (the same one-shot miss mail_search had, found 2026-09-12)."""
+    if not query:
+        return google.list_events(user_id, start, end), [""]
+    tried = []
+    windows = [(start, end)]
+    if start > _now() - timedelta(days=1):
+        windows.append((start - timedelta(days=180), start))
+    for window_start, window_end in windows:
+        for spelling in _spellings(query):
+            tried.append(f"{spelling} {window_start:%d.%m}–{window_end:%d.%m}")
+            events = google.list_events(user_id, window_start, window_end, query=spelling)
+            if events:
+                return events, tried
+    return [], tried
+
+
 def _query(scope: UserScope, ctx: ToolContext, period: str, query: str) -> str:
     now = _now()
     rng = google.range_for(period, now, scope.tz)
     if rng is None:
         return f"Error: could not understand the period {period!r}. Try 'сегодня', 'завтра', 'на этой неделе', 'в четверг'."
     start, end = rng
+    query = query.strip()
     if query:
         # "когда встреча с Артёмом": look ahead 60 days, not just the period.
         end = max(end, start + timedelta(days=60))
     try:
-        events = google.list_events(scope.user_id, start, end, query=query.strip())
+        events, tried = _climb(scope.user_id, start, end, query)
     except google.NotConnected as e:
         return f"Error: {e}"
     except google.GoogleError as e:
         return f"Error: calendar unavailable ({e}). Tell the user honestly."
     if not events:
         what = f" matching '{query}'" if query else ""
-        return f"No events{what} between {start:%d.%m} and {end:%d.%m}."
+        attempts = f" Tried: {' | '.join(tried)}." if len(tried) > 1 else ""
+        return (f"No events{what} between {start:%d.%m} and {end:%d.%m}.{attempts}"
+                + (" Say so plainly; do NOT offer the user a list of guesses to pick from."
+                   if query else ""))
     local_now = now.astimezone(ZoneInfo(scope.tz))
     lines = []
     for e in events[:20]:
