@@ -128,14 +128,14 @@ use the MCP for `/health` and logs from there.
     validity window. **FR-14 Notion showcase deferred** — needs a Notion internal
     token from Dimitry.
 - **Not done in the run, needs Dimitry (morning list):**
-  1. **Anthropic credit balance is empty** (400 "credit balance is too low" at
-     ~02:00 UTC 2026-09-12). Every free-text message and the brief fall back until
-     it is topped up in Console → Plans & Billing. FR-39 now says so in the chat.
-  2. **Golden set after stages 2–5 not run** for the same reason. Baseline 95%
-     (stage 1, 40 scenarios); now 57 scenarios, persona and tool descriptions
-     changed. Run it first thing:
-     `SVETA_GOLDEN=1 ANTHROPIC_API_KEY=… .venv/bin/python -m pytest -m golden -q -s`.
-     Below 90% → revert the persona lines of stages 2/5 and report.
+  1. ~~Anthropic credit balance~~ — topped up by Dimitry during the run; the
+     probe passed at 07:20 UTC. FR-39 now names an empty balance in the chat.
+  2. **Golden set after stages 2–5: 96% (55/57) on `claude-sonnet-5`**, 5 min 26 s,
+     2026-09-12 07:40 UTC. Both misses are the stage-1 pair (a two-intent message
+     where the model does one thing). The first run after the top-up found a
+     production bug: with 19 strict tools the API answers 400 "Schema is too
+     complex" — the budget is seven strict tools (`sveta/tools/__init__.py`,
+     `STRICT_TOOLS`). Fixed and pushed before the number above was measured.
   3. Railway cron services `digest` and `ingest` were created during the run (ids
      above). Check their first deploy logs in the morning: `digest` logs
      "nothing due" or one line per user; `ingest` logs "0 source(s) polled" until
