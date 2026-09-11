@@ -100,12 +100,15 @@ class FakeDB:
                            "inbox_item_id": inbox_item_id, "deleted_at": None}
         return nid
 
-    def search_notes(self, user_id, query, *, limit=5, source=None):
-        q = query.lower()
+    def search_notes(self, user_id, query, *, limit=5, source=None, broad=False):
+        # plainto_tsquery ANDs; the broad pass ORs. The fake used to OR always,
+        # which made it kinder than the SQL and hid the whole miss (2026-09-12).
+        words = query.lower().split()
+        join = any if broad else all
         out = [r for r in self.notes.values()
                if r["user_id"] == user_id and r["deleted_at"] is None
                and (source is None or r["source"] == source)
-               and any(w in ((r["title"] or "") + " " + r["body"]).lower() for w in q.split())]
+               and words and join(w in ((r["title"] or "") + " " + r["body"]).lower() for w in words)]
         return out[:limit]
 
     def recent_notes(self, user_id, *, limit=10, project=None):

@@ -518,10 +518,19 @@ def create_note(user_id: int, body: str, *, title: str | None = None,
         conn.close()
 
 
+# plainto_tsquery ANDs every word, so a paraphrase with one extra word finds
+# nothing. Swapping & for | in its output reuses the same safe normalisation and
+# stemming to build the broad pass — to_tsquery on raw phone input would raise on
+# its punctuation (FR-62).
+_AND_QUERY = "plainto_tsquery('russian', %s)"
+_OR_QUERY = "replace(plainto_tsquery('russian', %s)::text, '&', '|')::tsquery"
+
+
 def search_notes(user_id: int, query: str, *, limit: int = 5,
-                 source: str | None = None) -> list[dict]:
-    """Russian full-text over title+body. plainto_tsquery, not to_tsquery: the input
-    is a phrase typed on a phone, and to_tsquery raises on its punctuation."""
+                 source: str | None = None, broad: bool = False) -> list[dict]:
+    """Russian full-text over title+body. `broad` ORs the words instead of ANDing
+    them: the second rung of the ladder, run when the strict pass finds nothing."""
+    tsquery = _OR_QUERY if broad else _AND_QUERY
     conn = _conn()
     try:
         with conn:
@@ -529,12 +538,12 @@ def search_notes(user_id: int, query: str, *, limit: int = 5,
                 cur.execute(
                     f"""SELECT id, title, body, project, source, source_ref, created_at,
                                ts_rank(to_tsvector('russian', coalesce(title,'') || ' ' || body),
-                                       plainto_tsquery('russian', %s)) AS rank
+                                       {tsquery}) AS rank
                         FROM notes
                         WHERE user_id = %s AND deleted_at IS NULL
                           {"AND source = %s" if source else ""}
                           AND to_tsvector('russian', coalesce(title,'') || ' ' || body)
-                              @@ plainto_tsquery('russian', %s)
+                              @@ {tsquery}
                         ORDER BY rank DESC, created_at DESC
                         LIMIT %s""",
                     (query, user_id, *([source] if source else []), query, limit),

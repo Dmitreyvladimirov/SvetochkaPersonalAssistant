@@ -214,3 +214,21 @@ def test_a_plain_period_is_still_one_call(monkeypatch):
     out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
               ToolContext(), {"period": "завтра", "query": ""})
     assert calls == [""] and "Tried:" not in out
+
+
+def test_a_period_the_parser_cannot_pin_down_widens_instead_of_erroring(monkeypatch):
+    """Reading is free (§6.2): "на этой или на следующей, не помню" used to come
+    back as an error and leave the user holding the question (FR-62)."""
+    from datetime import timedelta
+    from sveta.tools import run
+    fake = install(monkeypatch)
+    connect(fake, monkeypatch)
+    monkeypatch.setattr(calendar_tool, "_now", lambda: NOW)
+    monkeypatch.setattr(google, "list_events",
+                        lambda uid, start, end, query="", limit=20: [
+                            {"id": "e", "summary": "Техосмотр", "start": NOW + timedelta(days=11),
+                             "end": None, "link": "", "all_day": False, "location": None}])
+    out = run(REGISTRY, "calendar_query", UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"),
+              ToolContext(), {"period": "то ли на этой, то ли на следующей", "query": ""})
+    assert not out.startswith("Error")
+    assert "Техосмотр" in out and "could not pin down" in out

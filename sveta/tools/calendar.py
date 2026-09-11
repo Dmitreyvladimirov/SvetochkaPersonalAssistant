@@ -47,9 +47,15 @@ def _climb(user_id: int, start: datetime, end: datetime, query: str) -> tuple[li
 def _query(scope: UserScope, ctx: ToolContext, period: str, query: str) -> str:
     now = _now()
     rng = google.range_for(period, now, scope.tz)
-    if rng is None:
-        return f"Error: could not understand the period {period!r}. Try 'сегодня', 'завтра', 'на этой неделе', 'в четверг'."
+    vague = rng is None
+    if vague:
+        # Reading is free (§6.2), so a phrase the parser cannot pin down ("на этой
+        # или на следующей, не помню") is answered with a wider window, not with
+        # an error that leaves the user holding the question (FR-62).
+        rng = google.range_for("", now, scope.tz) or (now, now + timedelta(days=30))
     start, end = rng
+    if vague:
+        end = start + timedelta(days=30)
     query = query.strip()
     if query:
         # "когда встреча с Артёмом": look ahead 60 days, not just the period.
@@ -67,13 +73,16 @@ def _query(scope: UserScope, ctx: ToolContext, period: str, query: str) -> str:
                 + (" Say so plainly; do NOT offer the user a list of guesses to pick from."
                    if query else ""))
     local_now = now.astimezone(ZoneInfo(scope.tz))
+    head = f"{len(events)} event(s)"
+    if vague:
+        head += f" (could not pin down {period!r}, so this is {start:%d.%m}–{end:%d.%m})"
     lines = []
     for e in events[:20]:
         when = "весь день " + f"{e['start']:%d.%m}" if e["all_day"] else timeparse.fmt(e["start"], local_now)
         tail = f"–{e['end']:%H:%M}" if e.get("end") and not e["all_day"] else ""
         place = f" @ {e['location']}" if e.get("location") else ""
         lines.append(f"- {when}{tail}: {e['summary']}{place} {e.get('link') or ''}".rstrip())
-    return f"{len(events)} event(s):\n" + "\n".join(lines)
+    return head + ":\n" + "\n".join(lines)
 
 
 CALENDAR_QUERY = Tool(

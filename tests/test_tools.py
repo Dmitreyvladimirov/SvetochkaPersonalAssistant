@@ -82,3 +82,36 @@ def test_suggest_honours_proactivity_preference(monkeypatch):
     ctx = ToolContext()
     run(REGISTRY, "suggest", s, ctx, {"actions": [{"label": "x", "instruction": "y"}]})
     assert ctx.suggestions == []
+
+
+def test_note_search_falls_back_to_any_of_the_words(monkeypatch):
+    """Postgres ANDs every word, so one extra word in the question used to find
+    nothing: the note says "онбординг через шаблоны", the question asks about
+    "онбординг для новых пользователей" (FR-62)."""
+    fake = install(monkeypatch)
+    fake.create_note(1, "онбординг через шаблоны, а не через пустой холст")
+    strict = run(REGISTRY, "note_search", scope(), ToolContext(),
+                 {"query": "онбординг через шаблоны", "source": ""})
+    assert strict.startswith("1 note(s):") and "no note has all" not in strict
+    broad = run(REGISTRY, "note_search", scope(), ToolContext(),
+                {"query": "онбординг для новых пользователей", "source": ""})
+    assert "онбординг через шаблоны" in broad
+    assert "no note has all of those words" in broad        # said plainly, not passed off as a hit
+
+
+def test_note_search_finding_nothing_does_not_ask_the_user_for_words(monkeypatch):
+    fake = install(monkeypatch)
+    fake.create_note(1, "совсем про другое")
+    out = run(REGISTRY, "note_search", scope(), ToolContext(), {"query": "бюджет на квартал", "source": ""})
+    assert "neither all the words together nor any of them" in out
+    assert "Do NOT ask the user to guess other words" in out
+
+
+def test_the_broad_pass_is_still_this_user_only(monkeypatch):
+    """The fallback widens the words, never the tenant (NFR-10)."""
+    fake = install(monkeypatch)
+    fake.add_user("222")
+    fake.create_note(2, "чужая заметка про онбординг и шаблоны")
+    out = run(REGISTRY, "note_search", scope(1), ToolContext(),
+              {"query": "онбординг для новых пользователей", "source": ""})
+    assert "чужая" not in out

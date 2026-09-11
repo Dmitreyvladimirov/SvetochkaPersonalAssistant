@@ -75,9 +75,20 @@ def _search(scope: UserScope, ctx: ToolContext, query: str, source: str) -> str:
     if not query:
         return "Error: query is empty."
     rows = db.search_notes(scope.user_id, query, source=source or None)
+    broadened = False
+    if not rows and len(query.split()) > 1:
+        # All the words, then any of them: a paraphrase shares the idea, not the
+        # phrasing, and one extra word used to be enough to find nothing (FR-62).
+        rows = db.search_notes(scope.user_id, query, source=source or None, broad=True)
+        broadened = bool(rows)
     if not rows:
-        return "No notes match. Say so honestly; do not invent."
-    return f"{len(rows)} note(s):\n" + _fmt(rows, scope.user_id)
+        return ("No notes match '" + query + "', neither all the words together nor any of them"
+                + (f" (source={source})" if source else "") + ". Say so plainly. Do NOT ask the "
+                "user to guess other words for you — note_recent shows what is there.")
+    head = f"{len(rows)} note(s)"
+    if broadened:
+        head += " (no note has all of those words; these have some of them, so check they are the right ones)"
+    return head + ":\n" + _fmt(rows, scope.user_id)
 
 
 NOTE_SEARCH = Tool(
