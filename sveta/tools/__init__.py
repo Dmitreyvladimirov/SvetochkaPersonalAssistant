@@ -52,12 +52,21 @@ def run(tools: list[Tool], name: str, scope: UserScope, ctx: ToolContext, args: 
     return by_name[name].fn(scope, ctx, **args)
 
 
-from sveta.tools import notes, preferences, suggest  # noqa: E402
+from sveta.tools import links, lists, notes, preferences, reminders, suggest  # noqa: E402
 
 REGISTRY: list[Tool] = [
     notes.NOTE_SAVE,
     notes.NOTE_SEARCH,
     notes.NOTE_RECENT,
+    links.LINK_SAVE,
+    links.LINK_FETCH,
+    lists.LIST_ADD,
+    lists.LIST_SHOW,
+    lists.LIST_CHECK,
+    lists.LIST_MOVE,
+    reminders.REMINDER_CREATE,
+    reminders.REMINDER_LIST,
+    reminders.REMINDER_CANCEL,
     preferences.PREFERENCE_SET,
     preferences.PREFERENCE_DELETE,
     preferences.MEMORY_SHOW,
