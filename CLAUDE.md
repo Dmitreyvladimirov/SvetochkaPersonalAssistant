@@ -143,11 +143,29 @@ use the MCP for `/health` and logs from there.
   Notion). New dependency: `cryptography` (Fernet, §8). Reviewed; the review's
   criticals and importants are fixed. Live check needs the four OAuth variables
   in Railway and Dimitry's two consents.
+- **Tickets end to end (2026-09-12, after stage 3):** attachments from Gmail into
+  the chat (`mail_send_attachment`, documents and images only), flight extraction
+  by the cheap model into structured legs with real durations and airport time
+  zones (`mail_extract_trip`, `sveta/core/airports.py`) — the ticket body never
+  reaches the agent model — `calendar_create` takes an optional `tz`, and up to
+  eight confirmation cards plus "✓✓ Всё сразу" for a batch of calendar events.
+  Reviewed; no criticals, eight important items fixed in `b9f77c0`.
+- **Research, 2026-09-12:** `docs/research/2026-09-12-product-scenarios.md` (20
+  scenarios, an integrations table with exact Google scopes and verification
+  impact, a five-increment order, and what not to build) and
+  `docs/research/2026-09-12-qa-gaps.md` (coverage matrix, §9/§10 gaps, the ten
+  tests to add next). Everything actionable is in the Notion backlog. The three
+  cheapest items already done: Hebrew ticket subjects, a redelivery guard on every
+  state-changing tap, and naming the Google scopes a consent left out.
+- **The strict-schema budget moves with the tool count.** Seven strict tools at 19
+  tools, six at 25 (`sveta/tools/__init__.py`, `STRICT_TOOLS`). Over the budget,
+  every agent call answers 400 "Schema is too complex". The golden run is the alarm.
 - **Not done in the run, needs Dimitry (morning list):**
   1. ~~Anthropic credit balance~~ — topped up by Dimitry during the run; the
      probe passed at 07:20 UTC. FR-39 now names an empty balance in the chat.
-  2. **Golden set: 97% (61/63) on `claude-sonnet-5`** after stage 3 (2026-09-12
-     10:10 UTC; 96% (55/57) after stages 2–5 at 07:40 UTC). A run costs ~$1.6 and
+  2. **Golden set: 97% (63/65) on `claude-sonnet-5`** after the ticket work
+     (2026-09-12 13:00 UTC; 97% (61/63) after stage 3, 96% (55/57) after stages
+     2–5). The two misses are the stage-1 pair: a message with two intents. A run costs ~$1.6 and
      is exempt from the per-user daily limit inside the test. Both misses are the stage-1 pair (a two-intent message
      where the model does one thing). The first run after the top-up found a
      production bug: with 19 strict tools the API answers 400 "Schema is too
