@@ -33,3 +33,6 @@ class ToolContext:
     suggestions: list[dict] = field(default_factory=list)
     # FR-13: records proposed for one-tap confirmation; nothing is written until then.
     proposal: list[dict] = field(default_factory=list)
+    # §6.2: tool calls with an outside effect, recorded instead of run. Each is
+    # {"kind": "confirm", "tool": name, "args": {...}, "label": text}.
+    pending: list[dict] = field(default_factory=list)

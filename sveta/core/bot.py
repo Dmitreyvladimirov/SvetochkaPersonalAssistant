@@ -16,7 +16,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sveta.core import agent, config, db, llm, telegram, timeparse, transcribe
+from sveta.core import agent, config, db, google, llm, notion, telegram, timeparse, transcribe
 from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import links as links_tool
 from sveta.tools import lists as lists_tool
@@ -35,9 +35,12 @@ HELP = (
     "• запомнить, как с тобой общаться («будь короче», «хватит здороваться»)\n"
     "• предложить следующий шаг кнопкой\n\n"
     "• утренний бриф и вечерний обзор («бриф в 8» — поменяет время)\n"
-    "• ленты RSS для брифа: /rss add <url>\n\n"
-    "Пока не умею (в работе): календарь, почта, Notion.\n\n"
-    "/ping — жива ли · /stats — расходы · /memory — что помню о тебе · /rss — ленты"
+    "• ленты RSS для брифа: /rss add <url>\n"
+    "• календарь и почта после /google: «что у меня завтра», «поставь встречу …» (по кнопке), "
+    "«найди письмо про …»\n"
+    "• копии заметок в Notion после /notion <ссылка на базу>\n\n"
+    "/ping — жива ли · /stats — расходы · /memory — что помню о тебе · /rss — ленты · "
+    "/google — подключить Google · /notion — витрина"
 )
 
 
@@ -171,6 +174,7 @@ def _process_text(scope: UserScope, item_id: int, text: str, chat_id, *,
             reply = f"Ссылку записала, но страница не открылась ({why}). Заметку не создала."
         db.mark_item(item_id, status="done", reply_text=reply)
         _reply(chat_id, progress_id, prefix + reply, _keyboard(scope, item_id, ctx))
+        _mirror_to_notion(scope, ctx.created_note_ids)
         return
 
     _run_agent(scope, item_id, text, chat_id, progress_id=progress_id, prefix=prefix)
@@ -203,9 +207,10 @@ def _run_agent(scope: UserScope, item_id: int, text: str, chat_id, *,
                                                       "Сообщение сохранила, попробую позже."))
         return
 
-    # Suggestions (FR-43) and a dump proposal (FR-13) share the inbox column:
-    # both are "things that happen only on a tap", kept until tapped.
-    stored = list(result.ctx.suggestions) + list(result.ctx.proposal)
+    # Suggestions (FR-43), a dump proposal (FR-13) and confirmation cards (§6.2)
+    # share the inbox column: all are "things that happen only on a tap".
+    stored = list(result.ctx.suggestions) + list(result.ctx.proposal) + list(result.ctx.pending)
+    _mirror_to_notion(scope, result.ctx.created_note_ids)
     try:
         db.mark_item(item_id, status="done", reply_text=result.reply,
                      suggestions=stored if stored else None)
@@ -229,6 +234,10 @@ def _command(scope: UserScope, text: str) -> str:
             return "Счётчик расходов недоступен."
     if cmd == "/rss":
         return _rss_command(scope, text.split()[1:])
+    if cmd == "/google":
+        return _google_command(scope)
+    if cmd == "/notion":
+        return _notion_command(scope, text.split()[1:])
     if cmd == "/memory":
         from sveta.tools import preferences as prefs_tool
         return prefs_tool.MEMORY_SHOW.fn(scope, ToolContext())
@@ -279,6 +288,85 @@ def _rss_command(scope: UserScope, args: list[str]) -> str:
     return "Команды: /rss · /rss add <url> · /rss rm <номер>"
 
 
+def _google_command(scope: UserScope) -> str:
+    """Stage 3: the OAuth link. The token never passes through the chat — Google
+    sends the code to /oauth/google/callback and the row is written there."""
+    if not google.configured():
+        return ("Google ещё не настроен на сервере: нужны GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET "
+                "в Railway (см. docs/stages/stage3.md).")
+    row = db.get_oauth_token(scope.user_id, "google")
+    lines = []
+    if row:
+        state = f"ошибка: {row['last_error']}" if row.get("last_error") else "работает"
+        lines.append(f"Сейчас подключён {row['account_email']} ({state}).")
+    lines.append("Открой ссылку, разреши доступ к календарю и почте, и я напишу, когда всё встанет:")
+    lines.append(google.auth_url(scope.user_id))
+    return "\n".join(lines)
+
+
+def _notion_command(scope: UserScope, args: list[str]) -> str:
+    """FR-14 via OAuth: /notion sends the consent link (or shows the state);
+    /notion <link> picks the database among those the consent shared."""
+    if not notion.configured():
+        return ("Notion ещё не настроен на сервере: нужны NOTION_CLIENT_ID и NOTION_CLIENT_SECRET "
+                "в Railway (см. docs/stages/stage3.md).")
+    token = notion.token_for(scope.user_id)
+    if not args:
+        if not token or (notion.oauth_configured() and not db.get_oauth_token(scope.user_id, "notion")):
+            return ("Открой ссылку, выбери базу «Светочка · Заметки» (или свою) и разреши доступ — "
+                    "я напишу, когда всё встанет:\n" + notion.auth_url(scope.user_id))
+        current = scope.pref("notion.notes_db")
+        if not current:
+            return ("Notion подключён, но витрина не выбрана. Пришли ссылку на базу: "
+                    "/notion <ссылка>. Переподключить: " + (notion.auth_url(scope.user_id) if notion.oauth_configured() else ""))
+        try:
+            title = notion.check_database(current, token)
+        except notion.NotionError as e:
+            return f"Витрина настроена ({current}), но Notion отвечает: {e}."
+        return f"Витрина: «{title}». Каждая новая заметка попадает туда копией."
+    if not token:
+        return "Сначала подключи Notion: /notion"
+    database_id = notion.database_id_from_link(args[0])
+    if not database_id:
+        return "Не вижу в ссылке id базы. Нужна ссылка на базу (таблицу) в Notion."
+    try:
+        title = notion.check_database(database_id, token)
+    except notion.NotionError as e:
+        return f"Не могу открыть базу: {e}."
+    db.set_preference(scope.user_id, "notion.notes_db", database_id, set_via="command")
+    return f"Витрина подключена: «{title}». Новые заметки будут появляться там."
+
+
+def _mirror_to_notion(scope: UserScope, note_ids: list[int]) -> None:
+    """FR-14, best effort, off the reply path: a Notion failure is a log line."""
+    database_id = scope.pref("notion.notes_db")
+    if not (note_ids and database_id and notion.configured()):
+        return
+
+    def work():
+        try:
+            token = notion.token_for(scope.user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("notion: token unavailable for user %s: %s", scope.user_id, str(e)[:120])
+            return
+        if not token:
+            return
+        for note_id in note_ids:
+            note = db.get_note(scope.user_id, note_id)
+            if not note:
+                continue
+            try:
+                page_id = notion.create_note_page(
+                    database_id, token, note_id=note_id, title=(note.get("title") or note["body"][:80]),
+                    body=note["body"], project=note.get("project"), source=note.get("source") or "telegram",
+                    url=note.get("source_ref") if (note.get("source_ref") or "").startswith("http") else None,
+                    created_at=note.get("created_at"))
+                db.set_note_notion_page(scope.user_id, note_id, page_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("notion: mirror of note %s failed: %s", note_id, str(e)[:200])
+    threading.Thread(target=work, name="notion-mirror", daemon=True).start()
+
+
 # --- Keyboards ---------------------------------------------------------------
 
 def _list_rows(scope: UserScope, list_id: int) -> list[list[dict]]:
@@ -308,6 +396,8 @@ def _keyboard(scope: UserScope, item_id: int, ctx: ToolContext) -> dict | None:
         rows.append([{"text": "✖︎ Отменить напоминание", "callback_data": f"undo:r:{ctx.created_reminder_ids[-1]}"}])
     if ctx.proposal:
         rows.append([{"text": f"✓ Сохранить все {len(ctx.proposal)}", "callback_data": f"dp:{item_id}"}])
+    for n, p in enumerate(ctx.pending[:3]):
+        rows.append([{"text": f"✓ {p['label']}"[:60], "callback_data": f"cf:{item_id}:{n}"}])
     for n, s in enumerate(ctx.suggestions[:3]):
         rows.append([{"text": s["label"][:40], "callback_data": f"sg:{item_id}:{n}"}])
     return {"inline_keyboard": rows} if rows else None
@@ -350,6 +440,15 @@ def _handle_callback(update_id, callback: dict) -> None:
                 telegram.answer_callback(callback_id, "Спасибо, учту." if what == "down" else "Спасибо!")
         return
 
+    if action == "cf":
+        item_part, _, n_part = rest.partition(":")
+        if not (item_part.isdigit() and n_part.isdigit()):
+            return
+        if db.claim_update(update_id, scope.user_id, kind="callback", raw_text=data) is None:
+            return
+        _confirm(scope, int(item_part), int(n_part), chat_id)
+        return
+
     if action == "dp" and rest.isdigit():
         # A tap is an update like any other: a redelivery or a double tap dies on
         # the update_id before anything is written (FR-3).
@@ -376,6 +475,41 @@ def _handle_callback(update_id, callback: dict) -> None:
         if new_item is None:
             return
         _run_agent(scope, new_item, instruction, chat_id)
+
+
+def _confirm(scope: UserScope, item_id: int, n: int, chat_id) -> None:
+    """§6.2: the tap is the only way a gated tool runs. Executes by code, once;
+    the entry is marked done on the inbox row."""
+    from sveta.tools import calendar as calendar_tool
+    from sveta.tools import mail as mail_tool
+    item = db.get_item(scope.user_id, item_id)
+    entries = (item or {}).get("suggestions") or []
+    pending = [e for e in entries if e.get("kind") == "confirm"]
+    if n >= len(pending):
+        telegram.send_message("Эта кнопка уже отработала или устарела.", chat_id)
+        return
+    entry = pending[n]
+    if entry.get("done"):
+        telegram.send_message("Это уже сделано.", chat_id)
+        return
+    entry["done"] = True
+    db.mark_item(item_id, status="done", suggestions=entries)
+    tool, args = entry.get("tool"), entry.get("args") or {}
+    if tool == "calendar_create":
+        telegram.send_message(calendar_tool.execute(scope, args), chat_id)
+        return
+    if tool == "mail_read_body":
+        body = mail_tool.execute(scope, args)
+        question = (item or {}).get("raw_text") or "перескажи письмо"
+        new_item = db.claim_update(None, scope.user_id, kind="confirm",
+                                   raw_text=f"[письмо прочитано по кнопке] {question}")
+        if new_item is None:
+            return
+        # The decrypted body goes into one agent turn as data (not logged), and
+        # the agent answers the original question from it.
+        _run_agent(scope, new_item, f"{body}\n\nВопрос пользователя: {question}", chat_id)
+        return
+    telegram.send_message("Не знаю, как выполнить это действие.", chat_id)
 
 
 def _save_proposal(scope: UserScope, item_id: int, chat_id) -> None:

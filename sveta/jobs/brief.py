@@ -23,6 +23,8 @@ MAX_LINES = 10
 WINDOW_MINUTES = 180
 KINDS = {"brief": ("brief.time", "07:30"), "review": ("review.time", "21:00")}
 HEADERS = {
+    "meetings": "Встречи",
+    "trips": "Поездки",
     "today": "Напоминания сегодня",
     "overdue": "Висит со вчера",
     "list_today": "Сегодня",
@@ -62,6 +64,11 @@ def gather(user_id: int, kind: str, now: datetime, tz: str) -> dict[str, list[st
     sections: dict[str, list[str]] = {}
 
     if kind == "brief":
+        meetings, trips = _google_sections(user_id, day_start, day_end, zone)
+        if meetings:
+            sections["meetings"] = meetings
+        if trips:
+            sections["trips"] = trips
         today = db.reminders_between(user_id, day_start, day_end)
         if today:
             sections["today"] = [f"{r['fire_at'].astimezone(zone):%H:%M} {_one_line(r['text'])}" for r in today]
@@ -85,6 +92,33 @@ def gather(user_id: int, kind: str, now: datetime, tz: str) -> dict[str, list[st
     return sections
 
 
+def _google_sections(user_id: int, day_start: datetime, day_end: datetime, zone) -> tuple[list[str], list[str]]:
+    """FR-29/FR-30: today's meetings and the next trip. Google down or not
+    connected → both empty and one log line; the brief still goes out (§9)."""
+    from sveta import playbooks
+    from sveta.core import google
+    meetings: list[str] = []
+    try:
+        for e in google.list_events(user_id, day_start, day_end):
+            when = "весь день" if e["all_day"] else f"{e['start']:%H:%M}"
+            place = f" @ {e['location']}" if e.get("location") else ""
+            meetings.append(f"{when} {_one_line(e['summary'])}{place}")
+    except google.NotConnected:
+        pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brief: calendar skipped for user %s: %s", user_id, e)
+    trips: list[str] = []
+    try:
+        for m in db.recent_trip_mail(user_id, day_start - timedelta(days=30)):
+            if playbooks.matching(f"{m.get('subject', '')} {m.get('sender', '')}"):
+                trips.append(f"{m['received_at'].astimezone(zone):%d.%m} {_one_line(m.get('subject') or '')}")
+            if len(trips) == 2:
+                break
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brief: trips skipped for user %s: %s", user_id, e)
+    return meetings, trips
+
+
 def _one_line(text: str, limit: int = 120) -> str:
     """One physical line per item, or the ≤10-line guarantee means nothing."""
     return " ".join((text or "").split())[:limit]
@@ -101,7 +135,7 @@ def template(kind: str, sections: dict[str, list[str]], prefs: dict) -> str:
     elif kind == "review":
         greeting = ["Вечерний обзор."]
 
-    order = ["open", "today", "overdue", "list_today", "news"]
+    order = ["open", "meetings", "today", "trips", "overdue", "list_today", "news"]
     budget = MAX_LINES - len(greeting)
     kept = {k: list(v) for k, v in sections.items() if v}
     shown = {k: len(v) for k, v in kept.items()}
@@ -109,7 +143,7 @@ def template(kind: str, sections: dict[str, list[str]], prefs: dict) -> str:
     def cost(k):
         return 1 + shown[k] + (1 if shown[k] < len(kept[k]) else 0)
 
-    for victim in ("news", "list_today", "overdue", "today", "open"):
+    for victim in ("news", "trips", "list_today", "overdue", "today", "meetings", "open"):
         while victim in kept and sum(cost(k) for k in kept) > budget:
             if shown[victim] > 1:
                 shown[victim] -= 1

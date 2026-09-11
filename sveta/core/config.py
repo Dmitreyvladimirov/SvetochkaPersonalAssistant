@@ -66,6 +66,18 @@ ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "sveta_anthropic")
 ANTHROPIC_WORKSPACE_ID = _env("ANTHROPIC_WORKSPACE_ID", "SVETA_ANTHROPIC_WORKSPACE_ID")
 OPENAI_API_KEY = _env("OPENAI_API_KEY", "sveta_openai_api")
 
+# Stage 3. Google: an OAuth "Web application" client whose redirect URI is
+# https://<PUBLIC_DOMAIN>/oauth/google/callback; the refresh token per user lives
+# in oauth_tokens, encrypted. Notion: one internal integration token (v1); the
+# target database is a per-user preference set with /notion. All optional: the
+# bot works without them and says so.
+GOOGLE_CLIENT_ID = _env("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = _env("GOOGLE_CLIENT_SECRET")
+NOTION_TOKEN = _env("NOTION_TOKEN")                 # fallback: one internal integration
+NOTION_CLIENT_ID = _env("NOTION_CLIENT_ID")         # preferred: a public integration, OAuth per user
+NOTION_CLIENT_SECRET = _env("NOTION_CLIENT_SECRET")
+PUBLIC_DOMAIN = _env("RAILWAY_PUBLIC_DOMAIN", "SVETA_PUBLIC_DOMAIN")
+
 # IDs without date suffixes (SPEC.md §6.1). effort is sent to the agent model only.
 AGENT_MODEL = _env("SVETA_AGENT_MODEL", default="claude-sonnet-5")
 CHEAP_MODEL = _env("SVETA_CHEAP_MODEL", default="claude-haiku-4-5")

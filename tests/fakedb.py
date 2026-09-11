@@ -15,6 +15,8 @@ class FakeDB:
         self.prefs = {}            # (user_id, key) -> value
         self.corrections = []
         self.facts = {}            # id -> row
+        self.oauth = {}            # (user_id, provider) -> row
+        self.mail = {}             # (user_id, gmail_id) -> row
         self.llm_calls = []
         self.lists = {}            # id -> row
         self.list_items = {}       # id -> row
@@ -38,6 +40,9 @@ class FakeDB:
 
     def get_user_by_chat(self, chat_id):
         return self.users.get(str(chat_id))
+
+    def get_user_by_id(self, user_id):
+        return next((dict(u) for u in self.users.values() if u["id"] == user_id), None)
 
     # inbox
     def claim_update(self, update_id, user_id, *, message_id=None, kind="text", raw_text=None,
@@ -421,6 +426,47 @@ class FakeDB:
 
     def spend_month(self, user_id):
         return self.spend_today(user_id)
+
+    # stage 3
+    def save_oauth_token(self, user_id, provider, account_email, refresh_token_enc, *, scopes=None):
+        row = {"id": self._next(), "user_id": user_id, "provider": provider, "account_email": account_email,
+               "refresh_token": refresh_token_enc, "scopes": scopes, "last_error": None,
+               "last_refresh_at": datetime.now(timezone.utc)}
+        self.oauth[(user_id, provider)] = row
+        return row["id"]
+
+    def get_oauth_token(self, user_id, provider):
+        row = self.oauth.get((user_id, provider))
+        return dict(row) if row else None
+
+    def mark_oauth_error(self, user_id, provider, error):
+        row = self.oauth.get((user_id, provider))
+        if row:
+            row["last_error"] = error
+
+    def save_mail_messages(self, user_id, messages):
+        saved = 0
+        for m in messages:
+            key = (user_id, m["gmail_id"])
+            if key in self.mail:
+                continue
+            self.mail[key] = {"user_id": user_id, **m}
+            saved += 1
+        return saved
+
+    def get_mail_message(self, user_id, gmail_id):
+        row = self.mail.get((user_id, gmail_id))
+        return dict(row) if row else None
+
+    def recent_trip_mail(self, user_id, since):
+        return sorted([dict(r) for r in self.mail.values()
+                       if r["user_id"] == user_id and r.get("received_at") and r["received_at"] >= since],
+                      key=lambda r: r["received_at"], reverse=True)[:50]
+
+    def set_note_notion_page(self, user_id, note_id, page_id):
+        r = self.notes.get(note_id)
+        if r and r["user_id"] == user_id:
+            r["notion_page_id"] = page_id
 
     # stage-0 API, kept so app tests still work
     def init_db(self):

@@ -393,6 +393,19 @@ def get_user_by_chat(chat_id) -> dict | None:
         conn.close()
 
 
+def get_user_by_id(user_id: int) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, telegram_chat_id, tz, status FROM users WHERE id = %s AND status = 'active'",
+                            (user_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 # --- Inbox -------------------------------------------------------------------
 
 def claim_update(update_id: int | None, user_id: int, *, message_id=None, kind="text",
@@ -1314,5 +1327,113 @@ def fill_correction(user_id: int, correction_id: int, should_have: str) -> bool:
                             "WHERE id = %s AND user_id = %s AND should_have IS NULL",
                             (should_have, correction_id, user_id))
                 return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+# --- Stage 3: OAuth tokens, mail, Notion mirror --------------------------------
+
+def save_oauth_token(user_id: int, provider: str, account_email: str, refresh_token_enc: bytes,
+                     *, scopes: str | None = None) -> int:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO oauth_tokens (user_id, provider, account_email, refresh_token, scopes)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (user_id, provider, account_email) DO UPDATE
+                           SET refresh_token = EXCLUDED.refresh_token, scopes = EXCLUDED.scopes,
+                               last_refresh_at = NOW(), last_error = NULL
+                       RETURNING id""",
+                    (user_id, provider, account_email, refresh_token_enc, scopes))
+                return cur.fetchone()["id"]
+    finally:
+        conn.close()
+
+
+def get_oauth_token(user_id: int, provider: str) -> dict | None:
+    """The newest token row for the provider (v1: one account per provider)."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, account_email, refresh_token, scopes, last_error, last_refresh_at "
+                            "FROM oauth_tokens WHERE user_id = %s AND provider = %s ORDER BY id DESC LIMIT 1",
+                            (user_id, provider))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_oauth_error(user_id: int, provider: str, error: str | None) -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE oauth_tokens SET last_error = %s, "
+                            "last_refresh_at = CASE WHEN %s IS NULL THEN NOW() ELSE last_refresh_at END "
+                            "WHERE user_id = %s AND provider = %s", (error, error, user_id, provider))
+    finally:
+        conn.close()
+
+
+def save_mail_messages(user_id: int, messages: list[dict]) -> int:
+    """Headers in the clear, body encrypted (FR-28). Re-saving a hit is a no-op."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                saved = 0
+                for m in messages:
+                    cur.execute(
+                        """INSERT INTO mail_messages (user_id, gmail_id, thread_id, sender, subject, snippet,
+                                                      body_enc, received_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (user_id, gmail_id) DO NOTHING""",
+                        (user_id, m["gmail_id"], m.get("thread_id"), m.get("sender"), m.get("subject"),
+                         m.get("snippet"), m.get("body_enc"), m.get("received_at")))
+                    saved += cur.rowcount
+                return saved
+    finally:
+        conn.close()
+
+
+def get_mail_message(user_id: int, gmail_id: str) -> dict | None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT gmail_id, sender, subject, snippet, body_enc, received_at FROM mail_messages "
+                            "WHERE user_id = %s AND gmail_id = %s", (user_id, gmail_id))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def recent_trip_mail(user_id: int, since) -> list[dict]:
+    """Trip-tagged mail (FR-29) is found by the same subject patterns the tool
+    uses; the query only narrows by date, the tagging happens in Python."""
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT gmail_id, sender, subject, snippet, received_at FROM mail_messages "
+                            "WHERE user_id = %s AND received_at >= %s ORDER BY received_at DESC LIMIT 50",
+                            (user_id, since))
+                return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_note_notion_page(user_id: int, note_id: int, page_id: str) -> None:
+    conn = _conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE notes SET notion_page_id = %s WHERE id = %s AND user_id = %s",
+                            (page_id, note_id, user_id))
     finally:
         conn.close()

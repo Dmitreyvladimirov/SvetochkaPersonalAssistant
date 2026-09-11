@@ -55,3 +55,9 @@
 {"message": "какой врач у Светы?", "expect_tools": ["fact_recall"], "forbid_tools": ["note_save"]}
 {"message": "мысли после созвона: 1) онбординг переделать под шаблоны 2) реферальную программу отложить до весны 3) нанять второго саппорта 4) спросить у Кости про бэкапы", "expect_tools": ["notes_propose"], "forbid_tools": ["note_save"]}
 {"message": "накопилось: переписать лендинг, позвать Машу на демо, проверить цены конкурентов", "expect_tools": ["notes_propose"], "forbid_tools": ["note_save"]}
+{"message": "что у меня завтра по календарю?", "expect_tools": ["calendar_query"], "forbid_tools": ["calendar_create", "note_search"]}
+{"message": "когда у меня встреча с Артёмом?", "expect_tools": ["calendar_query"], "forbid_tools": ["reminder_create"]}
+{"message": "поставь встречу с Костей в четверг в 15", "expect_tools": ["calendar_create"], "forbid_tools": ["reminder_create", "note_save"]}
+{"message": "найди билет на вечеринку, что-то типа Synergy", "expect_tools": ["mail_search"], "forbid_tools": ["note_search", "mail_read_body"]}
+{"message": "когда у меня самолёт?", "expect_tools_any": ["mail_search", "calendar_query"], "forbid_tools": ["note_save"]}
+{"message": "напомни в пятницу в 10 про отчёт и поставь это в календарь", "expect_tools": ["reminder_create", "calendar_create"], "forbid_tools": ["note_save"]}

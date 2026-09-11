@@ -9,9 +9,9 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
-from sveta.core import bot, config, db, telegram
+from sveta.core import bot, config, db, google, notion, telegram
 from sveta.jobs import reminder_tick
 
 logging.basicConfig(level=logging.INFO,
@@ -70,6 +70,71 @@ def health():
     # tick_alive is informational: a stuck tick must not fail the healthcheck and
     # roll a deployment back — reminders late beats the webhook down.
     return {"ok": True, "commit": commit, "db": database, "tick_alive": reminder_tick.alive()}
+
+
+@app.get("/oauth/google/callback")
+def google_callback(state: str = "", code: str = "", error: str = ""):
+    """Where Google sends the user after consent (stage 3). The state is an HMAC
+    of the user id, so only the user who asked in the chat can land a token on
+    their row. The page is one line; the real confirmation goes to the chat."""
+    user_id = google.user_from_state(state)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Bad state")
+    user = db.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Unknown user")
+    if error or not code:
+        telegram.send_message(f"Google не дал доступ ({error or 'нет кода'}). Попробуй /google ещё раз.",
+                              user["telegram_chat_id"])
+        return HTMLResponse("<p>Доступ не выдан. Можно закрыть страницу.</p>")
+    try:
+        email = google.exchange_code(user_id, code)
+    except google.GoogleError as e:
+        logger.error("oauth: exchange failed for user %s: %s", user_id, e)
+        telegram.send_message("Не смогла обменять код Google на токен. Попробуй /google ещё раз.",
+                              user["telegram_chat_id"])
+        return HTMLResponse("<p>Не получилось. Можно закрыть страницу.</p>", status_code=502)
+    telegram.send_message(f"Google подключён: {email}. Календарь и почта теперь доступны — "
+                          "спроси «что у меня завтра» или «найди письмо про …».", user["telegram_chat_id"])
+    return HTMLResponse("<p>Готово, Светочка подключена к Google. Можно закрыть страницу и вернуться в Telegram.</p>")
+
+
+@app.get("/oauth/notion/callback")
+def notion_callback(state: str = "", code: str = "", error: str = ""):
+    """Notion's consent screen lands here (FR-14 via OAuth). Same state binding
+    as Google; on success the shared database is picked automatically when
+    there is exactly one, otherwise the chat asks for /notion <link>."""
+    user_id = notion.user_from_state(state)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Bad state")
+    user = db.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Unknown user")
+    if error or not code:
+        telegram.send_message(f"Notion не дал доступ ({error or 'нет кода'}). Попробуй /notion ещё раз.",
+                              user["telegram_chat_id"])
+        return HTMLResponse("<p>Доступ не выдан. Можно закрыть страницу.</p>")
+    try:
+        workspace = notion.exchange_code(user_id, code)
+        databases = notion.shared_databases(notion.token_for(user_id))
+    except notion.NotionError as e:
+        logger.error("oauth: notion exchange failed for user %s: %s", user_id, e)
+        telegram.send_message("Не смогла получить доступ к Notion. Попробуй /notion ещё раз.",
+                              user["telegram_chat_id"])
+        return HTMLResponse("<p>Не получилось. Можно закрыть страницу.</p>", status_code=502)
+    if len(databases) == 1:
+        db.set_preference(user_id, "notion.notes_db", databases[0]["id"], set_via="oauth")
+        text = (f"Notion подключён ({workspace}). Витрина: «{databases[0]['title']}» — "
+                "новые заметки будут появляться там.")
+    elif databases:
+        names = "\n".join(f"- {d['title']}" for d in databases)
+        text = (f"Notion подключён ({workspace}). Ты расшарил несколько баз:\n{names}\n"
+                "Пришли ссылку на ту, что для заметок: /notion <ссылка>")
+    else:
+        text = (f"Notion подключён ({workspace}), но ни одной базы не расшарено. Открой базу "
+                "«Светочка · Заметки» → ⋯ → Connections → Svetochka, потом /notion <ссылка>.")
+    telegram.send_message(text, user["telegram_chat_id"])
+    return HTMLResponse("<p>Готово, Светочка подключена к Notion. Можно закрыть страницу и вернуться в Telegram.</p>")
 
 
 @app.post(WEBHOOK_PATH)

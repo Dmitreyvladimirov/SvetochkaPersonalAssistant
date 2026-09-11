@@ -131,6 +131,24 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
                 results.append(_tool_result(tu.id, "Error: this exact call was already made in this message; use its result.", True))
                 continue
             seen_calls.add(key)
+            gated = next((t for t in tools if t.name == tu.name and t.needs_confirmation), None)
+            if gated is not None:
+                # §6.2: an outside effect happens only on a tap. The tool's
+                # `describe(scope, args)` renders the card label and validates the
+                # arguments; the call itself is stored, not run.
+                try:
+                    label = gated.describe(scope, args) if gated.describe else f"{tu.name} {args}"
+                except Exception as e:  # noqa: BLE001
+                    results.append(_tool_result(tu.id, f"Error: {tu.name} refused: {str(e)[:300]}", True))
+                    continue
+                if label.startswith("Error"):
+                    results.append(_tool_result(tu.id, label, True))
+                    continue
+                ctx.pending.append({"kind": "confirm", "tool": tu.name, "args": args, "label": label})
+                results.append(_tool_result(
+                    tu.id, f"Proposed, waiting for the user's tap: {label}. A confirm button will appear "
+                           "under your reply. Do NOT say it is done; say what will happen when they tap."))
+                continue
             try:
                 out = run_tool(tools, tu.name, scope, ctx, args)
             except UnknownTool:

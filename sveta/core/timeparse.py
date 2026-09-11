@@ -177,6 +177,10 @@ def _clock(text: str) -> tuple[tuple[int, int, bool] | None, str]:
 
 def _day(text: str, now: datetime, at: tuple[int, int]) -> datetime | None:
     hour, minute = at
+    if "позавчера" in text:
+        return now - timedelta(days=2)
+    if "вчера" in text:
+        return now - timedelta(days=1)
     if "послезавтра" in text:
         return now + timedelta(days=2)
     if "завтра" in text:

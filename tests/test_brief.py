@@ -259,3 +259,27 @@ def test_dead_credential_is_named_in_the_chat(monkeypatch):
     monkeypatch.setattr(agent, "run", ordinary)
     bot.handle_update(msg("привет", update_id=3))
     assert "модель не ответила" in sent.edits[-1][2]   # a plain 400 stays generic
+
+
+def test_brief_has_meetings_and_trips_when_google_answers(monkeypatch):
+    from sveta.core import crypto, google
+    fake, sent = setup(monkeypatch)
+    fill(fake)
+    fake.save_oauth_token(1, "google", "d@x", crypto.encrypt("rt"))
+    monkeypatch.setattr(google, "list_events", lambda uid, s, e, query="", limit=20: [
+        {"id": "e1", "summary": "Созвон с Костей", "start": local(11, 30), "end": local(12), "all_day": False, "location": "Zoom"}])
+    fake.save_mail_messages(1, [{"gmail_id": "m1", "subject": "E-ticket LY315 TLV-BER", "sender": "El Al",
+                                 "received_at": NOW - timedelta(days=2)},
+                                {"gmail_id": "m2", "subject": "Re: отчёт", "sender": "Костя", "received_at": NOW}])
+    sections = brief.gather(1, "brief", NOW, TZ)
+    assert sections["meetings"] == ["11:30 Созвон с Костей @ Zoom"]
+    assert sections["trips"] == ["10.09 E-ticket LY315 TLV-BER"]
+    text = brief.template("brief", sections, {})
+    assert text.splitlines()[1] == "Встречи:" and len(text.splitlines()) <= 10
+
+
+def test_brief_skips_google_sections_when_not_connected(monkeypatch):
+    fake, sent = setup(monkeypatch)
+    fill(fake)
+    sections = brief.gather(1, "brief", NOW, TZ)
+    assert "meetings" not in sections and "trips" not in sections

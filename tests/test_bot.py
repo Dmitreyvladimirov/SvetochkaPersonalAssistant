@@ -38,6 +38,10 @@ def wire(monkeypatch, script=None):
     monkeypatch.setattr(fetch, "get", lambda url: fetch.FetchResult(url=url, final_url=url, status=200,
                                                                     title="Page title", summary="A summary."))
     monkeypatch.setattr(transcribe, "telegram_voice", lambda file_id: "напомни завтра в девять позвонить маме")
+    # Stage-3 integrations are off unless a test turns them on, whatever the shell holds.
+    from sveta.core import config as _config
+    for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "NOTION_TOKEN", "NOTION_CLIENT_ID", "NOTION_CLIENT_SECRET"):
+        monkeypatch.setattr(_config, name, "")
     return fake, sent, client
 
 

@@ -19,10 +19,11 @@ class Tool:
     description: str
     input_schema: dict
     fn: Callable[..., str]
-    # True = the tool has an outside effect and must not run without a tap. None of
-    # the stage-1 tools do; the flag exists so the loop already refuses correctly
-    # when calendar_create arrives in stage 3.
+    # True = the tool has an outside effect and must not run without a tap (§6.2).
+    # The loop then calls `describe(scope, args)` for the card label (a string
+    # starting with "Error" refuses the call) and stores the call for the button.
     needs_confirmation: bool = False
+    describe: Callable[..., str] | None = None
 
 
 def _strict(schema: dict) -> dict:
@@ -42,7 +43,9 @@ def _strict(schema: dict) -> dict:
 # gets additionalProperties=false and required in its schema (the model rarely
 # strays) and validates its arguments in Python (a TypeError comes back to the
 # model as text, never as an action).
-STRICT_TOOLS = frozenset({"reminder_create", "list_add", "list_check", "list_move",
+# calendar_create takes a strict slot from list_move: an event on the wrong day
+# costs more than a line in the wrong list.
+STRICT_TOOLS = frozenset({"reminder_create", "list_add", "list_check", "calendar_create",
                           "link_save", "note_save", "fact_remember"})
 
 
@@ -64,7 +67,7 @@ def run(tools: list[Tool], name: str, scope: UserScope, ctx: ToolContext, args: 
     return by_name[name].fn(scope, ctx, **args)
 
 
-from sveta.tools import dump, facts, links, lists, notes, preferences, reminders, suggest  # noqa: E402
+from sveta.tools import calendar, dump, facts, links, lists, mail, notes, preferences, reminders, suggest  # noqa: E402
 
 REGISTRY: list[Tool] = [
     notes.NOTE_SAVE,
@@ -82,6 +85,10 @@ REGISTRY: list[Tool] = [
     reminders.REMINDER_CREATE,
     reminders.REMINDER_LIST,
     reminders.REMINDER_CANCEL,
+    calendar.CALENDAR_QUERY,
+    calendar.CALENDAR_CREATE,
+    mail.MAIL_SEARCH,
+    mail.MAIL_READ_BODY,
     preferences.PREFERENCE_SET,
     preferences.PREFERENCE_DELETE,
     preferences.MEMORY_SHOW,
