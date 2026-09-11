@@ -10,8 +10,10 @@ through tools, playbooks and memory rather than by rewriting the core.
 - `RESEARCH.md` — the research and reasoning the spec grew out of.
 - `CLAUDE.md` — working notes for Claude Code sessions.
 
-Status: stages 0–1 deployed (2026-09-03) — notes, search, preferences,
-suggestion buttons. Next: stage 2 — voice, reminders, lists.
+Status: stages 0–2, 4 and 5 deployed (2026-09-12) — notes, search, preferences,
+suggestion buttons, voice, reminders, links, lists, morning brief and evening
+review, RSS, dump proposals, facts. Stage 3 (Google) needs OAuth from Dimitry;
+the Notion showcase (stage 5, FR-14) needs a token. Per-stage specs: `docs/stages/`.
 
 Development: see `CLAUDE.md` → Local development. Everything a new session needs
 (Railway ids, variable names, open operational items) is in that file; nothing

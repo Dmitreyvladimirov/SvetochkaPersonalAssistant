@@ -80,34 +80,65 @@ Logs and deployments: Railway dashboard, or the Railway MCP with the ids above.
 The public domain is not reachable from Claude Code on the web (egress proxy);
 use the MCP for `/health` and logs from there.
 
-## Open operational items (as of 2026-09-09)
+## Operational log
 
-None of these is code. All three block or degrade production until Dimitry acts
-in Railway / the Anthropic Console:
-
-1. **Agent calls fail with 400.** The Anthropic key in `sveta_anthropic` is
-   identity-linked; the API demands `anthropic-workspace-id` on every request.
-   Either add `SVETA_ANTHROPIC_WORKSPACE_ID` (Console → Settings → Workspaces,
-   id `wrkspc_…`) or replace the key with a workspace-scoped one. Until then every
-   free-text message gets "Не смогла разобрать — модель не ответила" and the
-   inbox row stays `failed`. `/ping`, `/stats`, `/help` work (no model).
-2. **Rotate `SVETA_WEBHOOK_SECRET`.** The first deployment carried the secret in
-   the webhook URL and Railway's HTTP log recorded it. Set a new value; startup
-   re-registers the webhook.
-3. **Golden set not yet run** against the real model (stage 1 DoD). Command above.
-   Do not edit `playbooks/persona.md` or tool descriptions before a baseline run.
-
-After 1 and 2: send the bot a free-text message and confirm in the deploy logs
-that the agent loop completed and a row landed in `llm_call`.
+- 2026-09-11: all three stage-1 operational items closed.
+  1. The Anthropic key in `sveta_anthropic` was replaced with a single-workspace
+     key (Console → API Keys, workspace selected at creation). No
+     `SVETA_ANTHROPIC_WORKSPACE_ID` needed; the header code path stays for
+     multi-workspace keys. First live call after the change: `POST /v1/messages`
+     200 OK at 01:23 UTC.
+  2. `SVETA_WEBHOOK_SECRET` rotated in Railway; the redeploy at 01:30 UTC
+     re-registered the webhook.
+  3. **Golden set baseline: 95% (38/40) on `claude-sonnet-5`**, 3 min 42 s.
+     Both misses are the same shape — a message with two intents where the model
+     only did one (`две мысли: … ` saved nothing; `запиши идею, потом покажи…`
+     searched but did not save). Judge any persona/tool-description change
+     against this baseline, not against a single number.
+- Golden-set gotcha: `tests/conftest.py` sets `ANTHROPIC_API_KEY=test-key` as a
+  default, and the canonical name wins over the `sveta_anthropic` alias. Export
+  the real key under `ANTHROPIC_API_KEY` (a `.env` copied from Railway is not
+  enough on its own).
 
 ## Current state
 
 - Spec v0.6. Stage 0 live 2026-09-03: skeleton, 20-table schema, `/health`, first
   user seeded from `SVETA_ALLOWED_CHAT_IDS`.
-- Stage 1 pushed 2026-09-03: webhook, inbox, agent loop (`sveta/core/agent.py`) over
-  the closed tool set in `sveta/tools/`, notes + search, preferences, `suggest`
-  buttons, "Не туда" undo. Voice, reminders, lists → stage 2.
+- Stage 1 closed 2026-09-11 (golden 95%): webhook, inbox, agent loop
+  (`sveta/core/agent.py`) over the closed tool set in `sveta/tools/`, notes + search,
+  preferences, `suggest` buttons, "Не туда" undo.
+- **Stages 2, 4 and 5 coded and pushed in the overnight run of 2026-09-11/12**
+  (Dimitry's go: "стадии 2, 4, 5, push в main после каждой"). Per-stage specs with
+  the assumptions taken: `docs/stages/stage2.md`, `stage4.md`, `stage5.md`.
+  - Stage 2: voice (Whisper over HTTPS, duration refused before download),
+    reminders (`sveta/core/timeparse.py` parses Russian time by code; the tick is a
+    daemon thread in the web process, `FOR UPDATE SKIP LOCKED`), links (SSRF-guarded
+    `fetch.py`, bare URL on the cheap path), lists with one checkbox button per line.
+  - Stage 4: `digest` and `ingest` roles in `run.sh` (`sveta/jobs/digest.py`,
+    `ingest.py`); brief and evening review per user in the user's tz, one per day;
+    RSS 2.0/Atom with the stdlib; `/rss` commands; FR-39 alerts for a dead key or an
+    empty credit balance.
+  - Stage 5: `notes_propose` (dump → one-tap save), corrections' "should have" from
+    the next message and into the prompt, `fact_remember` / `fact_recall` with a
+    validity window. **FR-14 Notion showcase deferred** — needs a Notion internal
+    token from Dimitry.
+- **Not done in the run, needs Dimitry (morning list):**
+  1. **Anthropic credit balance is empty** (400 "credit balance is too low" at
+     ~02:00 UTC 2026-09-12). Every free-text message and the brief fall back until
+     it is topped up in Console → Plans & Billing. FR-39 now says so in the chat.
+  2. **Golden set after stages 2–5 not run** for the same reason. Baseline 95%
+     (stage 1, 40 scenarios); now 57 scenarios, persona and tool descriptions
+     changed. Run it first thing:
+     `SVETA_GOLDEN=1 ANTHROPIC_API_KEY=… .venv/bin/python -m pytest -m golden -q -s`.
+     Below 90% → revert the persona lines of stages 2/5 and report.
+  3. **Railway cron services** `digest` (`*/15 * * * *`) and `ingest`
+     (`0 */3 * * *`) from the same repo with `SERVICE_TYPE` set and the same
+     variables as `sveta-web` (variable references `${{sveta-web.X}}` work). Created
+     via the Railway MCP if permitted during the run — see the morning report.
+  4. Manual acceptance (SPEC.md §14 item 3): one voice note, one "напомни …", one
+     "добавь в покупки …", one link with a comment, one three-thought dump,
+     "запомни, что …", `/rss add <feed>`.
 - The Telegram webhook registers itself on startup from `RAILWAY_PUBLIC_DOMAIN` +
   `SVETA_WEBHOOK_SECRET` (`app._register_webhook`); nobody pastes the bot token.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model. 229 tests.
