@@ -77,7 +77,7 @@ sveta/tools/reminders.py    reminder_create, reminder_list, reminder_cancel
 sveta/tools/lists.py        list_add, list_show, list_check, list_move
 sveta/tools/links.py        link_save, link_fetch
 tests/test_timeparse.py, test_fetch.py, test_voice.py, test_reminders.py,
-tests/test_lists.py, test_links.py, test_tick.py; test_isolation.py extended
+tests/test_lists.py, test_links.py, test_tick.py; isolation cases live next to each tool's tests
 tests/golden/scenarios.jsonl  +12 scenarios for the new tools
 ```
 
@@ -133,7 +133,7 @@ mark `sent` + `sent_at` in the same transaction. Chat id comes from a join with
 (tests, and any future cron-only role). FR-20 "within a minute" holds with a
 20-second period. FR-21 callbacks: `rm:done:<id>` → `done`; `rm:snooze:<id>` →
 `fire_at = now + 1h`, `scheduled`; `rm:tomorrow:<id>` → next day 09:00 in the
-user's tz, `scheduled`; `rm:cancel:<id>` → `cancelled` (the button under the
+user's tz, `scheduled`; `undo:r:<id>` → `cancelled` (the button under the
 creation reply).
 
 ### Links — FR-11, FR-12

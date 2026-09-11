@@ -108,3 +108,34 @@ def test_non_html_content_is_named_by_its_type(monkeypatch):
 def test_public_addresses_pass(monkeypatch, address):
     monkeypatch.setattr(fetch, "_resolve", lambda host: [address])
     fetch.check_url("https://example.com/")
+
+
+def test_body_is_capped_at_max_bytes_and_slow_drip_hits_the_deadline(monkeypatch):
+    class Resp:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        is_redirect = False
+        def __init__(self, chunks): self._chunks = chunks
+        def iter_bytes(self):
+            yield from self._chunks
+    class Stream:
+        def __init__(self, resp): self.resp = resp
+        def __enter__(self): return self.resp
+        def __exit__(self, *a): pass
+    class Client:
+        def __init__(self, resp): self.resp = resp
+        def stream(self, method, url): return Stream(self.resp)
+        def close(self): pass
+
+    status, headers, body, _ = fetch._http_get("https://x/", client=Client(Resp([b"a" * 700_000, b"b" * 700_000, b"c"])))
+    assert len(body) == fetch.MAX_BYTES
+
+    import time
+    ticks = iter([0, 0, 100])  # deadline computed, first chunk fine, second chunk late
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    try:
+        fetch._http_get("https://x/", client=Client(Resp([b"x", b"y", b"z"])))
+    except TimeoutError as e:
+        assert "exceeded" in str(e)
+    else:
+        raise AssertionError("must time out")

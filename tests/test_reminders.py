@@ -78,3 +78,17 @@ def test_reminders_never_cross_users(monkeypatch):
     assert run(REGISTRY, "reminder_list", scope(2), ToolContext(), {}) == "No scheduled reminders."
     assert run(REGISTRY, "reminder_cancel", scope(2), ToolContext(), {"reminder_id": rid}).startswith("Error")
     assert "1 scheduled" in run(REGISTRY, "reminder_list", scope(1), ToolContext(), {})
+
+
+def test_cancelled_reminder_can_be_recreated(monkeypatch):
+    """Review C2: after a mistaken cancel (or done, or snooze) the same request
+    must schedule again, not be reported as already set."""
+    fake = install(monkeypatch)
+    freeze(monkeypatch)
+    ctx = ToolContext()
+    run(REGISTRY, "reminder_create", scope(), ctx, {"text": "позвонить в банк", "when": "завтра в 11"})
+    rid = ctx.created_reminder_ids[0]
+    run(REGISTRY, "reminder_cancel", scope(), ctx, {"reminder_id": rid})
+    out = run(REGISTRY, "reminder_create", scope(), ToolContext(), {"text": "позвонить в банк", "when": "завтра в 11"})
+    assert out.startswith("Created reminder #")
+    assert fake.reminders[rid]["status"] == "scheduled" and len(fake.reminders) == 1

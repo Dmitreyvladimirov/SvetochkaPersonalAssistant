@@ -30,7 +30,10 @@ def _download(file_id: str) -> bytes:
         if not path:
             raise TranscriptionError(f"getFile returned no file_path: {meta.get('description', '?')}")
         r = client.get(f"https://api.telegram.org/file/bot{token}/{path}")
-        r.raise_for_status()
+        # No raise_for_status(): httpx puts the full URL — token included — into
+        # the exception text, and that text would reach the log and inbox_items.error (§8).
+        if r.status_code != 200:
+            raise TranscriptionError(f"file download HTTP {r.status_code}")
         return r.content
 
 
@@ -45,25 +48,36 @@ def _whisper(audio: bytes, filename: str = "voice.ogg") -> str:
                         data={"model": config.TRANSCRIBE_MODEL, "language": "ru",
                               "response_format": "json"},
                         files={"file": (filename, audio, "audio/ogg")})
+    if r.status_code == 401:
+        raise TranscriptionError("Ключ OpenAI не принимается (401). Проверь sveta_openai_api в Railway.")
     if r.status_code != 200:
         raise TranscriptionError(f"whisper HTTP {r.status_code}: {r.text[:200]}")
     return (r.json().get("text") or "").strip()
 
 
+def _redact(text: str) -> str:
+    """Belt and braces for §8: whatever an HTTP library puts in an error message,
+    the bot token and the OpenAI key never leave this module inside one."""
+    for secret in (config.TELEGRAM_TOKEN, config.OPENAI_API_KEY):
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
 def telegram_voice(file_id: str) -> str:
     """The transcript, possibly empty (the caller treats empty as 'не разобрала').
-    Raises TranscriptionError on transport trouble."""
+    Raises TranscriptionError on transport trouble; its text is safe to log."""
     try:
         audio = _download(file_id)
-    except TranscriptionError:
-        raise
+    except TranscriptionError as e:
+        raise TranscriptionError(_redact(str(e))) from None
     except Exception as e:  # noqa: BLE001
-        raise TranscriptionError(f"download failed: {type(e).__name__}: {str(e)[:200]}") from e
+        raise TranscriptionError(_redact(f"download failed: {type(e).__name__}: {str(e)[:200]}")) from None
     if not audio:
         raise TranscriptionError("downloaded file is empty")
     try:
         return _whisper(audio).strip()
-    except TranscriptionError:
-        raise
+    except TranscriptionError as e:
+        raise TranscriptionError(_redact(str(e))) from None
     except Exception as e:  # noqa: BLE001
-        raise TranscriptionError(f"whisper failed: {type(e).__name__}: {str(e)[:200]}") from e
+        raise TranscriptionError(_redact(f"whisper failed: {type(e).__name__}: {str(e)[:200]}")) from None

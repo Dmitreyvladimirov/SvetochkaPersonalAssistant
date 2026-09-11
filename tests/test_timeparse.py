@@ -1,6 +1,6 @@
 """Every supported phrase, against a fixed clock. Thursday 2026-09-10 10:00
 Asia/Jerusalem (UTC+3 in September)."""
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -73,6 +73,16 @@ CASES = [
     ("в пятницу в одиннадцать тридцать", at(2026, 9, 11, 11, 0)),   # minutes as words: hour only
     ("через два часа", at(2026, 9, 10, 12, 0)),
     ("в семь вечера", at(2026, 9, 10, 19, 0)),
+    # review findings I1–I4, S6, S7
+    ("в 11.30", at(2026, 9, 10, 11, 30)),
+    ("завтра в 11.30", at(2026, 9, 11, 11, 30)),
+    ("в 25.09 в 14", at(2026, 9, 25, 14, 0)),
+    ("в 5.10 в 18", at(2026, 10, 5, 18, 0)),
+    ("утром в 8", at(2026, 9, 11, 8, 0)),             # 08:00 passed → tomorrow morning, not 20:00
+    ("вечером в 8", at(2026, 9, 10, 20, 0)),
+    ("в четверг вечером", at(2026, 9, 10, 19, 0)),    # today 19:00 is still ahead
+    ("23 сентября 2027", at(2027, 9, 23, 9, 0)),
+    ("23 сентября 2027 в 10", at(2027, 9, 23, 10, 0)),
     # inside a longer phrase, as the model may pass it
     ("напомни в четверг в 11 позвонить в банк", at(2026, 9, 10, 11, 0)),
     ("Завтра в 11 — созвон с Костей", at(2026, 9, 11, 11, 0)),
@@ -85,7 +95,8 @@ def test_parse(phrase, expected):
 
 
 @pytest.mark.parametrize("phrase", ["", "позвонить в банк", "когда-нибудь", "в 25", "в 12:70",
-                                    "31 февраля", "скоро"])
+                                    "31 февраля", "скоро", "через 1.5 часа", "версия 2.5",
+                                    "через какое-то время"])
 def test_unknown_is_none(phrase):
     assert parse(phrase, now=NOW, tz=TZ) is None
 
@@ -105,3 +116,12 @@ def test_fmt():
     assert fmt(at(2026, 9, 11, 9, 0), NOW) == "завтра в 09:00"
     assert fmt(at(2026, 9, 17, 11, 0), NOW) == "чт 17.09 в 11:00"
     assert fmt(at(2026, 9, 17, 11, 0)) == "чт 17.09 в 11:00"
+
+
+def test_relative_hours_survive_a_dst_switch():
+    # Israel leaves DST on 2026-10-25 at 02:00 (clocks go back to 01:00).
+    before = datetime(2026, 10, 25, 0, 30, tzinfo=ZoneInfo(TZ))
+    result = parse("через 2 часа", now=before, tz=TZ)
+    # Same-tzinfo subtraction is wall-clock in Python; compare in UTC.
+    assert (result.astimezone(timezone.utc) - before.astimezone(timezone.utc)).total_seconds() == 7200
+    assert result.hour == 1 and result.fold == 1

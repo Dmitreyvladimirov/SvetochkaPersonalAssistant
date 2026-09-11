@@ -71,11 +71,17 @@ def check_url(url: str) -> None:
             raise UnsafeURL(f"{host} resolves to {address}, which is not public")
 
 
-def _http_get(url: str) -> tuple[int, dict, bytes, str | None]:
-    """(status, headers, body[:MAX_BYTES], redirect location). Patched in tests."""
+def _http_get(url: str, client=None) -> tuple[int, dict, bytes, str | None]:
+    """(status, headers, body[:MAX_BYTES], redirect location). Patched in tests.
+    TIMEOUT is httpx's per-operation timeout; the monotonic deadline below is the
+    whole-request ceiling, so a slow-drip server cannot hold the thread."""
+    import time
     import httpx
-    with httpx.Client(follow_redirects=False, timeout=TIMEOUT,
-                      headers={"User-Agent": USER_AGENT, "Accept-Language": "ru,en;q=0.8"}) as client:
+    deadline = time.monotonic() + TIMEOUT
+    own = client is None
+    client = client or httpx.Client(follow_redirects=False, timeout=TIMEOUT,
+                                    headers={"User-Agent": USER_AGENT, "Accept-Language": "ru,en;q=0.8"})
+    try:
         with client.stream("GET", url) as response:
             headers = {k.lower(): v for k, v in response.headers.items()}
             location = headers.get("location") if response.is_redirect else None
@@ -86,7 +92,12 @@ def _http_get(url: str) -> tuple[int, dict, bytes, str | None]:
                     if len(body) >= MAX_BYTES:
                         body = body[:MAX_BYTES]
                         break
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"fetch exceeded {TIMEOUT}s")
             return response.status_code, headers, body, location
+    finally:
+        if own:
+            client.close()
 
 
 def get(url: str) -> FetchResult:
@@ -115,6 +126,27 @@ def get(url: str) -> FetchResult:
     except Exception as e:  # noqa: BLE001 — timeouts, resets, TLS: all "could not fetch"
         result.error = f"{type(e).__name__}: {str(e)[:200]}"
     return result
+
+
+def get_bytes(url: str) -> tuple[bytes | None, dict, str | None]:
+    """(body, headers, error) for non-HTML consumers such as the RSS poller. Same
+    guard, same redirect limit, same size cap; no extraction."""
+    current = url
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            check_url(current)
+            status, headers, body, location = _http_get(current)
+            if location and 300 <= status < 400:
+                current = urljoin(current, location)
+                continue
+            if 200 <= status < 300:
+                return body, headers, None
+            return None, headers, f"HTTP {status}"
+        return None, {}, "too many redirects"
+    except UnsafeURL as e:
+        return None, {}, f"refused: {e}"
+    except Exception as e:  # noqa: BLE001
+        return None, {}, f"{type(e).__name__}: {str(e)[:200]}"
 
 
 # --- Extraction --------------------------------------------------------------

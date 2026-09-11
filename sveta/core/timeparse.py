@@ -9,14 +9,15 @@ Forms (docs/stages/stage2.md → Reminders):
   relative   через 20 минут · через час · через 2 часа · через полчаса ·
              через 3 дня · через неделю · через месяц
   day        сегодня · завтра · послезавтра · в четверг · в пятницу вечером ·
-             25 сентября · 25.09 · 15 числа
-  time       в 11 · в 11:30 · в 9 утра · в 7 вечера · в 11 часов · в полдень ·
-             утром 09:00 · днём 13:00 · вечером 19:00 · ночью 22:00
-A bare time with no day means today if still ahead, otherwise tomorrow. A day
-with no time means 09:00.
+             25 сентября [2027] · 25.09 · 15 числа
+  time       в 11 · в 11:30 · в 11.30 · в 9 утра · в 7 вечера · в 11 часов ·
+             в полдень · утром 09:00 · днём 13:00 · вечером 19:00 · ночью 22:00
+Numbers may be spelled out ("в девять", "через двадцать минут"), as Whisper
+writes them. A bare time with no day means today if still ahead, otherwise
+tomorrow. A day with no time means 09:00.
 """
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 DAY_PARTS = {"утром": 9, "утра": 9, "днем": 13, "дня": 13, "вечером": 19, "вечера": 19,
@@ -31,14 +32,17 @@ DEFAULT_HOUR = 9
 
 _RELATIVE = re.compile(
     r"через\s+(?:(\d+)\s*)?(полчаса|пол\s?часа|минут\w*|час\w*|дн\w*|день|недел\w*|месяц\w*)")
+# "в 11", "в 11:30", "в 11.30", "в 9 утра", "в 7 вечера", "в 11 часов"
 _CLOCK = re.compile(
-    r"(?:^|\s)в\s+(\d{1,2})(?::(\d{2}))?(?:\s*(?:час(?:а|ов)?))?(?:\s+(утра|дня|вечера|ночи))?(?=\s|$|[,.!?])")
-_DATE_MONTH = re.compile(r"(\d{1,2})\s+(" + "|".join(MONTHS) + r")")
-_DATE_DOT = re.compile(r"(?<!\d)(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?!\d)")
+    r"(?:^|\s)в\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s*(?:час(?:а|ов)?))?(?:\s+(утра|дня|вечера|ночи))?(?=\s|$|[,!?])")
+_DATE_MONTH = re.compile(r"(\d{1,2})\s+(" + "|".join(MONTHS) + r")(?:\s+(\d{4}))?")
+# A day.month[.year] — never a decimal ("1.5 часа"), never a clock (those are
+# blanked out before this runs), never followed by a unit word.
+_DATE_DOT = re.compile(
+    r"(?<![\d.])(\d{1,2})\.(\d{2})(?:\.(\d{2,4}))?(?![\d.])(?!\s*(?:час|мин|дн|тыс|км|кг|%))")
 _DATE_DAY = re.compile(r"(\d{1,2})\s+числа")
 _WEEKDAY = re.compile(r"(?:^|\s)(?:в|во)\s+(" + "|".join(WEEKDAYS) + r")")
 _DAYPART = re.compile(r"(?:^|\s)(утром|днем|вечером|ночью)(?=\s|$|[,.!?])")
-
 
 _UNITS = {"один": 1, "одну": 1, "одна": 1, "два": 2, "две": 2, "три": 3, "четыре": 4,
           "пять": 5, "шесть": 6, "семь": 7, "восемь": 8, "девять": 9, "десять": 10,
@@ -51,8 +55,6 @@ _NUMBER_WORDS = re.compile(
 
 
 def _words_to_digits(text: str) -> str:
-    """'в девять', 'через двадцать пять минут' — transcripts and people both spell
-    numbers out. 'час' alone ('через час') is handled by the relative pattern."""
     def repl(m):
         if m.group(1):
             return str(_TENS[m.group(1)] + (_UNITS[m.group(2)] if m.group(2) else 0))
@@ -68,7 +70,7 @@ def parse(phrase: str, *, now: datetime, tz: str) -> datetime | None:
     """`now` may be naive (taken as UTC) or aware; the result is aware in `tz`."""
     zone = ZoneInfo(tz)
     if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo("UTC"))
+        now = now.replace(tzinfo=timezone.utc)
     now = now.astimezone(zone)
     text = _norm(phrase)
     if not text:
@@ -76,26 +78,33 @@ def parse(phrase: str, *, now: datetime, tz: str) -> datetime | None:
 
     rel = _RELATIVE.search(text)
     if rel:
-        result = _relative(rel, now)
+        result = _relative(rel, now, zone)
         if result is None:
             return None
-        clock = _clock(text)
+        clock, _ = _clock(text)
         if clock and rel.group(2)[:2] in ("дн", "де", "не", "ме"):
             result = result.replace(hour=clock[0], minute=clock[1], second=0, microsecond=0)
         return result.replace(second=0, microsecond=0)
+    if "через" in text:
+        return None   # a relative phrase we could not read must not fall through to a date
 
-    day = _day(text, now)
-    clock = _clock(text)
+    clock, rest = _clock(text)
     part = _DAYPART.search(text)
-    if day is None and clock is None and part is None:
-        return None
-
     if clock is not None:
         hour, minute, explicit = clock
+        if part is not None and not explicit:
+            # "утром в 8" keeps 8; "вечером в 8" means 20 — the day part is the am/pm.
+            if part.group(1) in ("вечером", "ночью") and hour < 12:
+                hour += 12
+            explicit = True
     elif part is not None:
         hour, minute, explicit = DAY_PARTS[part.group(1)], 0, True
     else:
         hour, minute, explicit = DEFAULT_HOUR, 0, False
+
+    day = _day(rest, now, (hour, minute))
+    if day is None and clock is None and part is None:
+        return None
 
     if day is None:
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -107,58 +116,67 @@ def parse(phrase: str, *, now: datetime, tz: str) -> datetime | None:
             else:
                 candidate += timedelta(days=1)
         return candidate
-
-    candidate = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return candidate
+    return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def _relative(m: re.Match, now: datetime) -> datetime | None:
+def _relative(m: re.Match, now: datetime, zone: ZoneInfo) -> datetime | None:
+    """Minutes and hours are added in UTC so a DST switch in between does not
+    shift the result; days and weeks keep the wall-clock time; months are
+    calendar arithmetic."""
     n = int(m.group(1)) if m.group(1) else 1
     unit = m.group(2)
     if unit.startswith("пол"):
-        return now + timedelta(minutes=30)
-    if unit.startswith("минут"):
-        return now + timedelta(minutes=n)
-    if unit.startswith("час"):
-        return now + timedelta(hours=n)
-    if unit.startswith("дн") or unit == "день":
+        delta = timedelta(minutes=30)
+    elif unit.startswith("минут"):
+        delta = timedelta(minutes=n)
+    elif unit.startswith("час"):
+        delta = timedelta(hours=n)
+    elif unit.startswith("дн") or unit == "день":
         return now + timedelta(days=n)
-    if unit.startswith("недел"):
+    elif unit.startswith("недел"):
         return now + timedelta(weeks=n)
-    if unit.startswith("месяц"):
+    elif unit.startswith("месяц"):
         month = now.month - 1 + n
         year = now.year + month // 12
         month = month % 12 + 1
-        day = min(now.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                            31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        day = min(now.day, [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
         return now.replace(year=year, month=month, day=day)
-    return None
+    else:
+        return None
+    return (now.astimezone(timezone.utc) + delta).astimezone(zone)
 
 
-def _clock(text: str) -> tuple[int, int, bool] | None:
-    """(hour, minute, explicit) — explicit means the phrase named am/pm or used HH:MM,
-    so no 12-hour guessing is allowed."""
+def _clock(text: str) -> tuple[tuple[int, int, bool] | None, str]:
+    """(hour, minute, explicit) for the first *valid* clock phrase, and the text
+    with that phrase blanked so the date patterns never see it. explicit means
+    the phrase named am/pm or used minutes, so no 12-hour guessing is allowed."""
     if "в полдень" in text or text.startswith("полдень"):
-        return 12, 0, True
+        return (12, 0, True), text.replace("полдень", " ")
     if "в полночь" in text:
-        return 0, 0, True
-    m = _CLOCK.search(text)
-    if not m:
-        return None
-    hour = int(m.group(1))
-    minute = int(m.group(2) or 0)
-    if hour > 23 or minute > 59:
-        return None
-    qualifier = m.group(3)
-    explicit = bool(m.group(2)) or bool(qualifier) or "час" in m.group(0)
-    if qualifier in ("вечера", "дня") and hour < 12:
-        hour += 12
-    elif qualifier == "ночи" and hour == 12:
-        hour = 0
-    return hour, minute, explicit
+        return (0, 0, True), text.replace("полночь", " ")
+    valid = [m for m in _CLOCK.finditer(text)
+             if int(m.group(1)) <= 23 and int(m.group(2) or 0) <= 59]
+    for i, m in enumerate(valid):
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        # "в 5.10 в 18": a dotted pair followed by another clock is a date, not 05:10.
+        if (m.group(2) and "." in m.group(0) and i + 1 < len(valid)
+                and 1 <= hour <= 31 and 1 <= minute <= 12):
+            continue
+        qualifier = m.group(3)
+        explicit = bool(m.group(2)) or bool(qualifier) or "час" in m.group(0)
+        if qualifier in ("вечера", "дня") and hour < 12:
+            hour += 12
+        elif qualifier == "ночи" and hour == 12:
+            hour = 0
+        blanked = text[:m.start()] + " " * (m.end() - m.start()) + text[m.end():]
+        return (hour, minute, explicit), blanked
+    return None, text
 
 
-def _day(text: str, now: datetime) -> datetime | None:
+def _day(text: str, now: datetime, at: tuple[int, int]) -> datetime | None:
+    hour, minute = at
     if "послезавтра" in text:
         return now + timedelta(days=2)
     if "завтра" in text:
@@ -169,18 +187,19 @@ def _day(text: str, now: datetime) -> datetime | None:
     if m:
         target = WEEKDAYS[m.group(1)]
         ahead = (target - now.weekday()) % 7
-        # Same weekday today: the tool's past-check decides whether "today at 11"
-        # is still possible; here we only pick the day.
-        if ahead == 0 and _clock(text) is not None:
-            clock = _clock(text)
-            if now.replace(hour=clock[0], minute=clock[1], second=0, microsecond=0) <= now:
-                ahead = 7
-        elif ahead == 0:
+        # The same weekday means today only while the named (or default) time is
+        # still ahead; otherwise next week.
+        if ahead == 0 and now.replace(hour=hour, minute=minute, second=0, microsecond=0) <= now:
             ahead = 7
         return now + timedelta(days=ahead)
     m = _DATE_MONTH.search(text)
     if m:
         day, month = int(m.group(1)), MONTHS[m.group(2)]
+        if m.group(3):
+            try:
+                return now.replace(year=int(m.group(3)), month=month, day=day)
+            except ValueError:
+                return None
         return _date_this_or_next_year(now, month, day)
     m = _DATE_DOT.search(text)
     if m:

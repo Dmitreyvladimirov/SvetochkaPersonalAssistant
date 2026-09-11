@@ -77,3 +77,54 @@ def test_telegram_voice_wraps_download_and_whisper(monkeypatch):
         assert "empty" in str(e)
     else:
         raise AssertionError("must raise")
+
+
+def test_bot_token_never_appears_in_errors_or_logs(monkeypatch, caplog):
+    """§8: an httpx error message carries the full URL, token included."""
+    import httpx
+    from sveta.core import config
+    monkeypatch.setattr(config, "TELEGRAM_TOKEN", "123456:SECRET-TOKEN-ABC")
+
+    def failing_download(fid):
+        url = f"https://api.telegram.org/file/bot{config.TELEGRAM_TOKEN}/voice/file_1.oga"
+        req = httpx.Request("GET", url)
+        raise httpx.HTTPStatusError("Client error '404 Not Found' for url '" + url + "'",
+                                    request=req, response=httpx.Response(404, request=req))
+    monkeypatch.setattr(transcribe, "_download", failing_download)
+    try:
+        transcribe.telegram_voice("f1")
+    except transcribe.TranscriptionError as e:
+        assert "SECRET-TOKEN-ABC" not in str(e) and "[redacted]" in str(e)
+    else:
+        raise AssertionError("must raise")
+
+    fake, sent, client = wire(monkeypatch)
+    monkeypatch.setattr(transcribe, "_download", failing_download)
+    monkeypatch.setattr(transcribe, "telegram_voice", transcribe.telegram_voice)  # real wrapper
+    import importlib
+    real = importlib.import_module("sveta.core.transcribe").telegram_voice
+    monkeypatch.setattr(transcribe, "telegram_voice", real)
+    with caplog.at_level("ERROR"):
+        bot.handle_update(voice(5))
+    assert "SECRET-TOKEN-ABC" not in caplog.text
+    assert "SECRET-TOKEN-ABC" not in (list(fake.inbox.values())[0]["error"] or "")
+
+
+def test_download_status_is_reported_without_the_url(monkeypatch):
+    class R:
+        status_code = 500
+        content = b""
+    class C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json=None): return type("M", (), {"json": lambda self: {"result": {"file_path": "voice/1.oga"}}})()
+        def get(self, url): return R()
+    import httpx
+    monkeypatch.setattr(httpx, "Client", C)
+    try:
+        transcribe._download("f1")
+    except transcribe.TranscriptionError as e:
+        assert str(e) == "file download HTTP 500"
+    else:
+        raise AssertionError("must raise")

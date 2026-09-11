@@ -73,3 +73,23 @@ def test_reminder_buttons_from_another_chat_are_ignored(monkeypatch):
     bot.handle_update({"update_id": 99, "callback_query": {"id": "cb", "data": "rm:done:2",
                        "message": {"message_id": 1, "chat": {"id": 999}, "text": "x"}}})
     assert fake.reminders[fake.due]["status"] == "scheduled" and sent.messages == []
+
+
+def test_reminder_buttons_cannot_touch_another_registered_users_row(monkeypatch):
+    """NFR-10 at the bot level: user 222 owns the row, user 111 taps."""
+    fake, sent = setup(monkeypatch)
+    fake.add_user("222")
+    rid, _ = fake.create_reminder(2, "их напоминание", datetime.now(timezone.utc), "UTC", "theirs")
+    for data in (f"rm:done:{rid}", f"rm:snooze:{rid}", f"undo:r:{rid}"):
+        bot.handle_update({"update_id": 99, "callback_query": {"id": "cb", "data": data,
+                           "message": {"message_id": 1, "chat": {"id": 111}, "text": "x"}}})
+    assert fake.reminders[rid]["status"] == "scheduled"
+    assert all("не найдено" in m[1] or "не активно" in m[1] for m in sent.messages)
+
+
+def test_finished_reminder_is_not_resurrected_by_snooze(monkeypatch):
+    fake, sent = setup(monkeypatch)
+    fake.reminders[fake.due]["status"] = "done"
+    bot.handle_update({"update_id": 99, "callback_query": {"id": "cb", "data": f"rm:snooze:{fake.due}",
+                       "message": {"message_id": 1, "chat": {"id": 111}, "text": "x"}}})
+    assert fake.reminders[fake.due]["status"] == "done" and "закрыто" in sent.messages[-1][1]
