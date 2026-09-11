@@ -43,10 +43,13 @@ def _strict(schema: dict) -> dict:
 # gets additionalProperties=false and required in its schema (the model rarely
 # strays) and validates its arguments in Python (a TypeError comes back to the
 # model as text, never as an action).
-# calendar_create takes a strict slot from list_move: an event on the wrong day
-# costs more than a line in the wrong list.
-STRICT_TOOLS = frozenset({"reminder_create", "list_add", "list_check", "calendar_create",
-                          "link_save", "note_save", "fact_remember"})
+# The budget shrinks as the tool set grows: measured at seven strict tools with
+# 19 tools (2026-09-12 07:30 UTC) and six with 25 tools (12:40 UTC). Order of
+# keeping: outside effects and dated writes first; a fact with a malformed
+# argument is a wrong memory, not a wrong event. The golden run is the alarm
+# when the budget moves again (400 "Schema is too complex" on the first call).
+STRICT_TOOLS = frozenset({"reminder_create", "calendar_create", "list_add", "list_check",
+                          "link_save", "note_save"})
 
 
 def definitions(tools: list[Tool]) -> list[dict]:

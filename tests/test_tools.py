@@ -19,8 +19,8 @@ def test_every_tool_schema_is_closed_and_writers_are_strict():
         assert d["input_schema"]["additionalProperties"] is False
         assert set(d["input_schema"]["required"]) == set(d["input_schema"]["properties"].keys())
     assert STRICT_TOOLS <= names
-    # The API's grammar budget: measured 2026-09-12 at seven strict tools.
-    assert len(STRICT_TOOLS) <= 7
+    # The API's grammar budget: seven strict tools at 19 tools, six at 25 (2026-09-12).
+    assert len(STRICT_TOOLS) <= 6
 
 
 def test_unknown_tool_is_an_error_not_an_action(monkeypatch):
