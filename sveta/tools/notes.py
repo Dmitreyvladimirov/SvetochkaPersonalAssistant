@@ -88,6 +88,9 @@ def _search(scope: UserScope, ctx: ToolContext, query: str, source: str) -> str:
     head = f"{len(rows)} note(s)"
     if broadened:
         head += " (no note has all of those words; these have some of them, so check they are the right ones)"
+    # FR-65: "пришли её файлом" has to resolve to the note just shown.
+    for r in rows[:3]:
+        ctx.found(f"заметка #{r['id']}: {(r.get('title') or r['body'])[:60]}")
     return head + ":\n" + _fmt(rows, scope.user_id)
 
 

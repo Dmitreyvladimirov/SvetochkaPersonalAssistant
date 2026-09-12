@@ -32,8 +32,16 @@ PRICES = {
 # Luna, not nano, for reading attachments: both read a ticket PDF correctly in
 # testing, but Luna's price is the one SPEC §7.1 records. Move vision to
 # gpt-5.4-nano once its rate is confirmed — it is cheaper again.
+# "plan" is the agent model on purpose. Measured 2026-09-12: asked to unfold
+# "билеты в Колумбию" and "билет на вечеринку" into Gmail queries, gpt-5.6-luna
+# returned nothing usable twice out of three and the tool silently fell back to
+# the user's own words — which is the "she is dumb" failure all over again.
+# gpt-5.6-terra unfolded all three into cities, airports, airlines and three
+# languages. Reading an attachment is extraction and stays cheap; deciding what
+# to search for is not.
 DEFAULT_MODELS = {"agent": "gpt-5.6-terra", "cheap": "gpt-5.6-luna",
-                  "vision": "gpt-5.6-luna", "brief": "gpt-5.6-terra"}
+                  "vision": "gpt-5.6-luna", "plan": "gpt-5.6-terra",
+                  "brief": "gpt-5.6-terra"}
 
 
 def client(api_key: str, workspace_id: str = ""):

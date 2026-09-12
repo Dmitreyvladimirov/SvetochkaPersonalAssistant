@@ -19,6 +19,12 @@ class UserScope:
         return self.preferences.get(key, default)
 
 
+# A pointer back, not a transcript: enough to name what was found, never enough
+# to replace looking at it again.
+MAX_REFS = 6
+MAX_REF_CHARS = 160
+
+
 @dataclass
 class ToolContext:
     """Side channels a tool may write to during one message: what it created (so
@@ -36,3 +42,14 @@ class ToolContext:
     # §6.2: tool calls with an outside effect, recorded instead of run. Each is
     # {"kind": "confirm", "tool": name, "args": {...}, "label": text}.
     pending: list[dict] = field(default_factory=list)
+    # FR-65: what this exchange found, in a line a later message can build on —
+    # "письмо [m-col] Air Europa", "рейсы UX1301, UX0091". A tool writes the short
+    # form, never the whole result: this is a pointer back, not a cache, and it is
+    # re-sent with every step of every following message.
+    refs: list[str] = field(default_factory=list)
+
+    def found(self, what: str) -> None:
+        """Record a reference, trimmed and deduplicated; at most MAX_REFS survive."""
+        what = " ".join((what or "").split())[:MAX_REF_CHARS]
+        if what and what not in self.refs and len(self.refs) < MAX_REFS:
+            self.refs.append(what)

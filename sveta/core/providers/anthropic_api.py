@@ -17,8 +17,12 @@ PRICES = {
     "claude-opus-5": (5.00, 25.00),
 }
 
+# Haiku stays the planner here: it unfolded queries well enough for the 97% the
+# full golden set scored on 2026-09-12. The role exists so the choice is per
+# provider rather than per tier.
 DEFAULT_MODELS = {"agent": "claude-sonnet-5", "cheap": "claude-haiku-4-5",
-                  "vision": "claude-haiku-4-5", "brief": "claude-sonnet-5"}
+                  "vision": "claude-haiku-4-5", "plan": "claude-haiku-4-5",
+                  "brief": "claude-sonnet-5"}
 
 # Anthropic caches only what is marked. The marker goes on the last element of the
 # prefix that never changes; everything before it is covered.

@@ -56,10 +56,12 @@ class FakeDB:
                            "raw_text": raw_text, "status": "new", "reply_text": None,
                            "suggestions": None, "error": None,
                            "received_at": datetime.now(timezone.utc),
-                           "file_id": file_id, "file_name": file_name, "file_mime": file_mime}
+                           "file_id": file_id, "file_name": file_name, "file_mime": file_mime,
+                           "context": None}
         return iid
 
-    def mark_item(self, item_id, *, status, error=None, reply_text=None, suggestions=None):
+    def mark_item(self, item_id, *, status, error=None, reply_text=None, suggestions=None,
+                  context=None):
         row = self.inbox[item_id]
         row["status"] = status
         row["error"] = error
@@ -67,19 +69,26 @@ class FakeDB:
             row["reply_text"] = reply_text
         if suggestions is not None:
             row["suggestions"] = suggestions
+        if context is not None:
+            row["context"] = context
 
     def get_item(self, user_id, item_id):
         row = self.inbox.get(item_id)
         return dict(row) if row and row["user_id"] == user_id else None
 
-    def recent_exchanges(self, user_id, limit=8):
+    def recent_exchanges(self, user_id, limit=8, hours=24):
         # Command replies ("/connect" → "Google — не подключён") are status screens,
         # not conversation: fed into the history they teach the model stale facts.
+        # Files ARE conversation (FR-64) — excluding them was the bug.
+        from datetime import timedelta
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         rows = [r for r in self.inbox.values()
                 if r["user_id"] == user_id and (r["raw_text"] or r.get("transcript")) and r["reply_text"]
-                and r["kind"] in ("text", "voice")
+                and r["kind"] in ("text", "voice", "photo", "document")
+                and r["received_at"] > cutoff
                 and not (r["raw_text"] or r.get("transcript") or "").startswith("/")]
-        return [{"raw_text": r["raw_text"] or r.get("transcript"), "reply_text": r["reply_text"]}
+        return [{"raw_text": r["raw_text"] or r.get("transcript"), "reply_text": r["reply_text"],
+                 "kind": r["kind"], "file_name": r.get("file_name"), "context": r.get("context")}
                 for r in rows[-limit:]]
 
     def set_transcript(self, item_id, transcript):

@@ -39,7 +39,7 @@ class FakeProvider:
     NAME = "fake"
     PRICES = {}
     DEFAULT_MODELS = {"agent": "fake-agent", "cheap": "fake-cheap",
-                      "vision": "fake-vision", "brief": "fake-agent"}
+                      "vision": "fake-vision", "plan": "fake-plan", "brief": "fake-agent"}
 
     @staticmethod
     def complete(client, **kw) -> Completion:

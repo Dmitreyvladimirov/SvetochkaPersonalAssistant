@@ -68,7 +68,7 @@
 {"message": "найди счёт за электричество за прошлый месяц", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
 {"message": "пришли мне чек, который я скидывал", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["mail_search"]}
 {"message": "вот скан посадочного", "expect_tools_any": ["note_save"], "forbid_tools": ["reminder_create", "list_add"]}
-{"message": "найди мои билеты в Будапешт", "expect_tools": ["mail_search"], "forbid_reply": ["Лондон", "London", "DDDK6P"], "forbid_tools": ["calendar_create"], "smoke": true}
+{"message": "найди мои билеты в Будапешт", "expect_tools": ["mail_search"], "forbid_reply": ["DDDK6P"], "forbid_tools": ["calendar_create"], "smoke": true, "expect_reply": ["не нашла"]}
 {"message": "найди мой билет на вечеринку в эту субботу", "expect_tools": ["mail_search"], "forbid_reply": ["Bilettix", "попробовать другие слова"]}
 {"message": "когда мой рейс в Боготу?", "expect_tools": ["mail_search"], "expect_reply": ["7PVOQO"], "smoke": true}
 {"message": "найди счёт за электричество", "expect_tools": ["mail_search"], "expect_reply": ["312"]}

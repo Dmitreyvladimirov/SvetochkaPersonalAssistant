@@ -329,6 +329,9 @@ def schema_statements() -> list[str]:
         # bytes stay with Telegram (§8) and file_id is enough to send it back.
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_name TEXT",
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_mime TEXT",
+        # FR-65: short references to what the tools found in this exchange, so the
+        # next message can build on them instead of searching again.
+        "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS context JSONB",
         # Prompt caching (2026-09-12): without these two the saving is invisible
         # in the data, and the whole point of caching is being able to measure it.
         "ALTER TABLE llm_call ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
@@ -444,7 +447,8 @@ def claim_update(update_id: int | None, user_id: int, *, message_id=None, kind="
 
 
 def mark_item(item_id: int, *, status: str, error: str | None = None,
-              reply_text: str | None = None, suggestions: list | None = None) -> None:
+              reply_text: str | None = None, suggestions: list | None = None,
+              context: dict | None = None) -> None:
     import json
     conn = _conn()
     try:
@@ -454,10 +458,12 @@ def mark_item(item_id: int, *, status: str, error: str | None = None,
                     """UPDATE inbox_items
                        SET status = %s, error = %s, processed_at = NOW(),
                            reply_text = COALESCE(%s, reply_text),
-                           suggestions = COALESCE(%s::jsonb, suggestions)
+                           suggestions = COALESCE(%s::jsonb, suggestions),
+                           context = COALESCE(%s::jsonb, context)
                        WHERE id = %s""",
                     (status, error, reply_text,
                      json.dumps(suggestions, ensure_ascii=False) if suggestions is not None else None,
+                     json.dumps(context, ensure_ascii=False) if context else None,
                      item_id),
                 )
     finally:
@@ -478,21 +484,38 @@ def get_item(user_id: int, item_id: int) -> dict | None:
         conn.close()
 
 
-def recent_exchanges(user_id: int, limit: int = 8) -> list[dict]:
-    """The short conversation history the agent sees: last N (message, reply) pairs,
-    oldest first. Only text items with a reply — voice and failures add noise."""
+# FR-64. Bounded by both, on purpose: a count alone drags a conversation from
+# three weeks ago into today as though it had just happened, and an age alone lets
+# a busy hour push the window past what is worth re-sending (it is the part of the
+# prompt no provider can cache, because it changes with every message).
+HISTORY_LIMIT = 8
+HISTORY_HOURS = 24
+# Voice arrives as a transcript and a file as what the cheap model read off it, so
+# both are ordinary exchanges by the time they get here. Excluding files was a
+# filter written before attachments existed: it meant that after sending a receipt,
+# "сколько там вышло" had neither the receipt nor her own answer about it.
+HISTORY_KINDS = ("text", "voice", "photo", "document")
+
+
+def recent_exchanges(user_id: int, limit: int = HISTORY_LIMIT,
+                     hours: int = HISTORY_HOURS) -> list[dict]:
+    """The recent conversation the agent sees: (message, reply) pairs, oldest
+    first, each with whatever that exchange found (FR-65)."""
     conn = _conn()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT COALESCE(raw_text, transcript) AS raw_text, reply_text FROM inbox_items
+                    """SELECT COALESCE(raw_text, transcript) AS raw_text, reply_text,
+                              kind, file_name, context
+                       FROM inbox_items
                        WHERE user_id = %s AND COALESCE(raw_text, transcript) IS NOT NULL
                          AND reply_text IS NOT NULL
-                         AND kind IN ('text', 'voice')
+                         AND kind = ANY(%s)
                          AND COALESCE(raw_text, transcript) NOT LIKE '/%%'
+                         AND received_at > NOW() - make_interval(hours => %s)
                        ORDER BY id DESC LIMIT %s""",
-                    (user_id, limit),
+                    (user_id, list(HISTORY_KINDS), hours, limit),
                 )
                 rows = [dict(r) for r in cur.fetchall()]
                 return list(reversed(rows))

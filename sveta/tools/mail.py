@@ -60,11 +60,11 @@ def _plan_queries(scope: UserScope, ctx: ToolContext, what: str, when: str) -> t
         client = _client()
         with llm.Timer() as t:
             answer = llm.complete(
-                client, model=config.CHEAP_MODEL, max_tokens=600,
+                client, model=config.PLAN_MODEL, max_tokens=600,
                 system=[{"type": "text", "text": _QUERY_SYSTEM.format(today=date.today().isoformat())}],
                 messages=[{"role": "user", "content": ask[:500]}])
-        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "mailquery", config.CHEAP_MODEL,
-                           answer.usage, llm.price(config.CHEAP_MODEL, answer.usage), t.ms)
+        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "mailquery", config.PLAN_MODEL,
+                           answer.usage, llm.price(config.PLAN_MODEL, answer.usage), t.ms)
         data = _json_object(answer.text) or {}
     except llm.BudgetExceeded:
         return fallback
@@ -73,6 +73,13 @@ def _plan_queries(scope: UserScope, ctx: ToolContext, what: str, when: str) -> t
         return fallback
     queries = [_clean(q, 200) for q in (data.get("queries") or []) if _clean(q, 200)][:MAX_QUERIES]
     terms = [_clean(t, 40) for t in (data.get("key_terms") or []) if _clean(t, 40)][:8]
+    if not queries:
+        # Falling back means searching the user's own words once, which is the
+        # behaviour FR-62 exists to prevent — so it is said out loud in the log
+        # rather than degrading quietly (a weak planner did this silently on
+        # two requests out of three, 2026-09-12).
+        logger.warning("mail: planner returned no queries on %s — falling back to the raw words",
+                       config.PLAN_MODEL)
     return (queries or fallback[0], terms or fallback[1])
 
 
@@ -129,6 +136,10 @@ def _search(scope: UserScope, ctx: ToolContext, what: str, when: str = "") -> st
                  "was asked for. Do not offer them as the answer: say the search found only other "
                  "mail, and try mail_search once more with a different angle before asking.")
     text += f"\n{attempts}"
+    # FR-65: the next message may be "а обратный во сколько" — without the ids it
+    # would search the mailbox again and quite possibly find something else.
+    for h in shown[:3]:
+        ctx.found(f"письмо [{h['gmail_id']}] {h.get('sender') or ''} · {h.get('subject') or ''}")
     tagged = " ".join(f"{h.get('subject', '')} {h.get('sender', '')}" for h in shown)
     return text + playbooks.attach(tagged)
 
@@ -311,6 +322,11 @@ def _extract_trip(scope: UserScope, ctx: ToolContext, gmail_id: str) -> str:
     legs = [l for l in (data or {}).get("legs") or [] if isinstance(l, dict) and l.get("date")]
     if not legs:
         return "No flights found in this message. Try the other message (the e-ticket, not the receipt)."
+    # FR-65: "занеси второй в календарь" must not re-read the ticket.
+    pnr = _clean((data or {}).get("pnr"), 10)
+    flights = ", ".join(f for f in (_flight_no(l.get("flight")) for l in legs) if f)
+    ctx.found(f"разобранный билет [{gmail_id}]"
+              + (f" PNR {pnr}" if pnr else "") + (f": {flights}" if flights else ""))
     return _render_legs(scope, data, legs)
 
 

@@ -173,7 +173,10 @@ def test_the_planner_unfolds_and_falls_back(monkeypatch):
     scope = UserScope(user_id=1, chat_id="111", tz="UTC")
     queries, terms = mail_tool._plan_queries(scope, ToolContext(inbox_item_id=3), "билеты в Колумбию", "в декабре")
     assert queries == ["a", "b"] and terms == ["Bogota"]
-    assert seen["model"] == config.CHEAP_MODEL and "срок: в декабре" in seen["messages"][0]["content"]
+    # Planning is judgement, not extraction: it runs on PLAN_MODEL, never on the
+    # tier that reads attachments (a weak planner silently answered with the
+    # user's own words on two requests out of three, 2026-09-12).
+    assert seen["model"] == config.PLAN_MODEL and "срок: в декабре" in seen["messages"][0]["content"]
     assert fake.llm_calls[-1]["purpose"] == "mailquery"
 
     monkeypatch.setattr(mail_tool, "_client", lambda: FailingClient(RuntimeError("down")))
@@ -226,3 +229,18 @@ def test_an_old_ticket_to_another_city_is_not_offered_as_the_answer(monkeypatch)
     out = ask("билеты в Будапешт")
     assert "[m-london]" in out                                   # it is what the mailbox has
     assert "NONE of these mentions Budapest" in out and "probably NOT what" in out
+
+
+def test_a_planner_that_says_nothing_useful_is_logged_not_silent(monkeypatch, caplog):
+    """The fallback searches the user's own words once, which is exactly what
+    FR-62 exists to prevent. It stays a fallback, but it stops being quiet."""
+    import logging
+    from sveta.tools import mail as mail_tool
+    fake = install(monkeypatch)
+    fake.add_user("111")
+    monkeypatch.setattr(mail_tool, "_client", lambda: scripted('{"queries": [], "key_terms": []}'))
+    with caplog.at_level(logging.WARNING):
+        queries, terms = mail_tool._plan_queries(
+            UserScope(user_id=1, chat_id="111", tz="UTC"), ToolContext(), "билеты в Колумбию", "")
+    assert queries == ["билеты в Колумбию"]
+    assert "falling back to the raw words" in caplog.text

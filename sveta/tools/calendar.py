@@ -82,6 +82,9 @@ def _query(scope: UserScope, ctx: ToolContext, period: str, query: str) -> str:
         tail = f"–{e['end']:%H:%M}" if e.get("end") and not e["all_day"] else ""
         place = f" @ {e['location']}" if e.get("location") else ""
         lines.append(f"- {when}{tail}: {e['summary']}{place} {e.get('link') or ''}".rstrip())
+    # FR-65: "перенеси её на час позже" needs to know which event "она" is.
+    for e in events[:3]:
+        ctx.found(f"событие «{e['summary']}» {e['start']:%d.%m %H:%M}")
     return head + ":\n" + "\n".join(lines)
 
 

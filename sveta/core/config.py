@@ -101,6 +101,9 @@ CHEAP_MODEL = _model("cheap", "SVETA_CHEAP_MODEL")
 # PDF came back complete from the cheap tier of both providers (tested
 # 2026-09-12), and this is the highest-volume paid call Svetochka makes.
 VISION_MODEL = _model("vision", "SVETA_VISION_MODEL")
+# Turning "билеты в Колумбию" into Gmail queries is judgement, not extraction:
+# it has to know that Colombia means Bogota and BOG (FR-62).
+PLAN_MODEL = _model("plan", "SVETA_PLAN_MODEL")
 BRIEF_MODEL = _model("brief", "SVETA_BRIEF_MODEL")
 TRANSCRIBE_MODEL = _env("SVETA_TRANSCRIBE_MODEL", default="whisper-1")
 

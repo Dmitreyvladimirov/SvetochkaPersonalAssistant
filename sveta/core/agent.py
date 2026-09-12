@@ -90,12 +90,35 @@ def _corrections(scope: UserScope) -> list[dict]:
         return []
 
 
+HISTORY_CHARS = 2000
+
+
+def _trim(text: str) -> str:
+    """Cut long enough to be useful, and say so when cutting — a reply that stops
+    mid-sentence reads to the model as a reply that said that much and no more."""
+    text = text or ""
+    return text if len(text) <= HISTORY_CHARS else text[:HISTORY_CHARS].rstrip() + " […]"
+
+
 def _history_messages(history: list[dict]) -> list[dict]:
+    """The recent conversation, oldest first (FR-64). A file is an exchange like
+    any other, labelled so the model knows the text is what was read off it and
+    not something the user typed, and each reply carries what that exchange found
+    (FR-65) so a follow-up can build on it instead of searching again."""
     out = []
     for h in history:
-        if h.get("raw_text") and h.get("reply_text"):
-            out.append({"role": "user", "content": h["raw_text"][:2000]})
-            out.append({"role": "assistant", "content": h["reply_text"][:2000]})
+        said, replied = h.get("raw_text"), h.get("reply_text")
+        if not said or not replied:
+            continue
+        kind = h.get("kind")
+        if kind in ("photo", "document"):
+            name = h.get("file_name") or ("фото" if kind == "photo" else "файл")
+            said = f"[прислал {name}, на нём:] {said}"
+        found = ((h.get("context") or {}).get("found") or [])
+        if found:
+            replied += "\n[в этом сообщении найдено: " + "; ".join(found) + "]"
+        out.append({"role": "user", "content": _trim(said)})
+        out.append({"role": "assistant", "content": _trim(replied)})
     return out
 
 

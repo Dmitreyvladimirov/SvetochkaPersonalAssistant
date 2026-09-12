@@ -274,3 +274,97 @@ def test_redelivered_checkbox_tap_changes_state_once(monkeypatch):
     bot.handle_update(tap)
     bot.handle_update(tap)                  # Telegram redelivered the same update
     assert fake.list_items[iid]["checked_at"] is not None
+
+
+# --- FR-64/FR-65: what survives from one message to the next -------------------
+
+def test_a_photo_is_an_exchange_like_any_other(monkeypatch):
+    """The history filter was written before attachments existed, so after sending
+    a receipt neither the receipt nor her own answer about it was in context, and
+    "сколько там вышло" had nothing to work with (found 2026-09-12)."""
+    from tests.test_files import photo, vision
+    fake, sent, client = wire(monkeypatch, [
+        [("note_save", {"body": "чек Super-Pharm 87.40", "project": "", "url": ""})],
+        "Сохранила чек на 87.40 ₪.",
+        "Восемьдесят семь сорок.",
+    ])
+    vision(monkeypatch)
+    bot.handle_update(photo(update_id=1))
+    bot.handle_update(msg("сколько там вышло?", update_id=2))
+    history = client.messages.requests[-1]["messages"]
+    said = [m["content"] for m in history if isinstance(m["content"], str)]
+    assert any("прислал photo.jpg" in t for t in said), said
+    assert any("Super-Pharm" in t for t in said)
+    assert any("Сохранила чек на 87.40" in t for t in said)
+
+
+def test_what_a_search_found_travels_to_the_next_message(monkeypatch):
+    """FR-65. "найди билет" then "а обратный во сколько" must build on the first
+    answer, not search the mailbox again and find something else."""
+    from sveta.core import config, crypto, google
+    fake, sent, client = wire(monkeypatch, [
+        [("mail_search", {"what": "билеты в Колумбию", "when": ""})], "Нашла билет Air Europa.",
+        "Обратный 4 октября.",
+    ])
+    from sveta.tools import mail as mail_tool
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "cs")
+    fake.save_oauth_token(1, "google", "d@x", crypto.encrypt("rt"))
+    monkeypatch.setattr(mail_tool, "_plan_queries", lambda scope, ctx, what, when: (["q"], []))
+    monkeypatch.setattr(google, "search_mail", lambda uid, q, limit=5: [
+        {"gmail_id": "m-col", "thread_id": "t", "sender": "Air Europa <x@ae.com>",
+         "subject": "Localizador 7PVOQO", "snippet": "UX1301", "received_at": None,
+         "body": "UX1301", "link": "https://mail/m-col"}])
+    bot.handle_update(msg("найди билеты в Колумбию", update_id=1))
+    assert list(fake.inbox.values())[0]["context"]["found"] == [
+        "письмо [m-col] Air Europa <x@ae.com> · Localizador 7PVOQO"]
+
+    bot.handle_update(msg("а обратный во сколько?", update_id=2))
+    history = client.messages.requests[-1]["messages"]
+    carried = [m["content"] for m in history
+               if isinstance(m["content"], str) and "найдено" in m["content"]]
+    assert carried and "m-col" in carried[0] and "7PVOQO" in carried[0]
+
+
+def test_a_conversation_from_last_month_is_not_treated_as_current(monkeypatch):
+    """FR-64: bounded by age as well as by count. Eight pairs regardless of when
+    they happened put a three-week-old exchange in front of the model as though it
+    had just been said."""
+    from datetime import timedelta
+    fake, sent, client = wire(monkeypatch, ["ок", "ок"])
+    bot.handle_update(msg("это было давно", update_id=1))
+    old_item = list(fake.inbox.values())[0]
+    old_item["received_at"] = old_item["received_at"] - timedelta(days=30)
+    bot.handle_update(msg("а это сейчас", update_id=2))
+    said = [m["content"] for m in client.messages.requests[-1]["messages"]
+            if isinstance(m["content"], str)]
+    assert not any("это было давно" in t for t in said), said
+    assert any("а это сейчас" in t for t in said)
+
+
+def test_a_long_reply_is_cut_and_says_so(monkeypatch):
+    """A reply that stops mid-sentence reads to the model as a reply that said
+    that much and no more."""
+    long_reply = "строка. " * 500
+    fake, sent, client = wire(monkeypatch, [long_reply, "ок"])
+    bot.handle_update(msg("расскажи", update_id=1))
+    bot.handle_update(msg("и?", update_id=2))
+    carried = [m["content"] for m in client.messages.requests[-1]["messages"]
+               if isinstance(m["content"], str) and m["content"].startswith("строка.")]
+    assert carried and carried[0].endswith("[…]") and len(carried[0]) <= 2010
+
+
+def test_references_are_pointers_not_a_second_copy_of_the_answer(monkeypatch):
+    """The refs are re-sent with every step of every following message, so they are
+    capped hard. A tool that tried to stash a whole result would be trimmed."""
+    from sveta.core.scope import MAX_REFS, ToolContext
+    ctx = ToolContext()
+    for i in range(20):
+        ctx.found(f"письмо [{i}] " + "очень длинная тема " * 30)
+    assert len(ctx.refs) == MAX_REFS
+    assert all(len(r) <= 160 for r in ctx.refs)
+    ctx2 = ToolContext()
+    ctx2.found("письмо [m1]")
+    ctx2.found("письмо   [m1]")          # whitespace-normalised, so it is the same one
+    ctx2.found("")
+    assert ctx2.refs == ["письмо [m1]"]

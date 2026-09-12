@@ -262,7 +262,8 @@ def _run_agent(scope: UserScope, item_id: int, text: str, chat_id, *,
     _mirror_to_notion(scope, result.ctx.created_note_ids)
     try:
         db.mark_item(item_id, status="done", reply_text=result.reply,
-                     suggestions=stored if stored else None)
+                     suggestions=stored if stored else None,
+                     context={"found": result.ctx.refs} if result.ctx.refs else None)
     except Exception:  # noqa: BLE001 — the reply must still replace the placeholder
         logger.exception("bot: mark_item failed for item %s after a successful run", item_id)
     _reply(chat_id, progress_id, prefix + result.reply, _keyboard(scope, item_id, result.ctx))
