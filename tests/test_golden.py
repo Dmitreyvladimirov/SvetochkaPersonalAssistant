@@ -24,7 +24,13 @@ THRESHOLD = 0.90
 
 
 KEYS = {"message", "expect_tools", "expect_tools_any", "forbid_tools", "forbid_tool_prefix",
-        "min_calls", "expect_args", "expect_reply", "forbid_reply"}
+        "min_calls", "expect_args", "expect_reply", "forbid_reply", "smoke"}
+
+# A full run is 81 real messages on the agent model. That is the right price
+# before a release and the wrong one for the tenth prompt tweak of an evening:
+# eight full runs on 2026-09-11 cost ~$18 and took the production key down with
+# them. SVETA_GOLDEN=smoke runs one scenario per thing that can break.
+SMOKE = [s for s in SCENARIOS if s.get("smoke")]
 
 
 def test_golden_file_is_well_formed():
@@ -33,6 +39,9 @@ def test_golden_file_is_well_formed():
     from sveta.tools import REGISTRY
     names = {t.name for t in REGISTRY}
     assert len(SCENARIOS) >= 40
+    # Small enough to run on every prompt change, wide enough to be worth running.
+    assert 8 <= len(SMOKE) <= 20, len(SMOKE)
+    assert {s["message"] for s in SMOKE} <= {s["message"] for s in SCENARIOS}
     for s in SCENARIOS:
         assert s["message"].strip()
         assert set(s) <= KEYS, (s["message"], set(s) - KEYS)
@@ -123,6 +132,7 @@ def _check(scenario: dict, calls: list[tuple[str, dict]], reply: str = "") -> li
 @pytest.mark.golden
 @pytest.mark.skipif(not os.environ.get("SVETA_GOLDEN"), reason="set SVETA_GOLDEN=1 to spend money")
 def test_golden_set(monkeypatch):
+    scenarios = SMOKE if os.environ.get("SVETA_GOLDEN") == "smoke" else SCENARIOS
     fake = install(monkeypatch)
     fake.add_user("111", tz="Asia/Jerusalem")
     from sveta.core import config, fetch, llm
@@ -141,7 +151,7 @@ def test_golden_set(monkeypatch):
     failures = []
     ran = 0
     stopped = ""
-    for s in SCENARIOS:
+    for s in scenarios:
         try:
             r = agent.run(scope, s["message"], client=client, purpose="golden")
         except Exception as e:  # noqa: BLE001
@@ -161,11 +171,13 @@ def test_golden_set(monkeypatch):
         print(f"{'x' if misses else '.'}", end="", flush=True)
     report = "\n".join(f"- {m!r}: {why} (called {called})" for m, why, called in failures)
     if stopped:
-        print(f"\nGolden stopped after {ran}/{len(SCENARIOS)} scenarios: {stopped}\n{report}")
-        pytest.fail(f"the credential gave out after {ran}/{len(SCENARIOS)} scenarios — "
+        print(f"\nGolden stopped after {ran}/{len(scenarios)} scenarios: {stopped}\n{report}")
+        pytest.fail(f"the credential gave out after {ran}/{len(scenarios)} scenarios — "
                     f"nothing is proven about the rest.\n{stopped}\n{report}")
     score = 1 - len(failures) / ran
-    print(f"\nGolden: {score:.0%} ({ran - len(failures)}/{ran}) on {config.AGENT_MODEL}\n{report}")
+    kind = "smoke" if scenarios is SMOKE else "full"
+    print(f"\nGolden ({kind}): {score:.0%} ({ran - len(failures)}/{ran}) "
+          f"on {config.AGENT_MODEL}\n{report}")
     assert score >= THRESHOLD, f"golden {score:.0%} < {THRESHOLD:.0%}\n{report}"
 
 
@@ -179,3 +191,15 @@ def test_a_dead_credential_is_recognised_before_the_run_burns_more():
         "You will regain access on 2026-10-01 at 00:00 UTC.'}}"))
     assert _is_terminal(Exception("401 authentication_error: invalid x-api-key"))
     assert not _is_terminal(Exception("500 overloaded_error"))
+
+
+def test_the_smoke_set_covers_every_class_of_failure_we_have_seen():
+    """It is only worth running often if a regression cannot hide from it: each of
+    these is a distinct way Svetochka has actually gone wrong."""
+    tools = {t for s in SMOKE for t in s.get("expect_tools", []) + s.get("expect_tools_any", [])}
+    for needed in ("note_save", "note_search", "reminder_create", "list_add",
+                   "mail_search", "calendar_query", "preference_set", "notes_propose"):
+        assert needed in tools, needed
+    assert any(s.get("forbid_reply") for s in SMOKE)        # the wrong-hit class
+    assert any(s.get("expect_reply") for s in SMOKE)        # the did-it-find-it class
+    assert any(s.get("forbid_tool_prefix") for s in SMOKE)  # prompt injection
