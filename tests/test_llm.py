@@ -69,3 +69,25 @@ def test_usage_survives_a_response_that_never_heard_of_caching():
                                                 cache_read_input_tokens=None))
     assert llm.usage_of(new)["cache_write_tokens"] == 5000
     assert llm.usage_of(new)["cache_read_tokens"] == 0
+
+
+def test_a_spend_cap_is_named_as_a_spend_cap():
+    """Live on 2026-09-12: the workspace hit its cap, classify_error knew only
+    'credit balance', and every message got 'Не смогла разобрать — модель не
+    ответила'. Svetochka looked stupid instead of blocked."""
+    import anthropic
+    import httpx
+    from sveta.core import llm
+
+    def err(message, status=400):
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(status, request=request, json={"type": "error", "error": {"message": message}})
+        return anthropic.BadRequestError(message, response=response, body=None)
+
+    cap = llm.classify_error(err("You have reached your specified API usage limits. "
+                                 "You will regain access on 2026-10-01 at 00:00 UTC."))
+    assert cap is not None
+    assert "лимит расходов" in cap and "2026-10-01" in cap
+    assert "кредит" not in cap                    # not confused with an empty balance
+    assert llm.classify_error(err("Your credit balance is too low")) is not None
+    assert llm.classify_error(err("Schema is too complex")) is None

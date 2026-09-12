@@ -100,6 +100,17 @@ def classify_error(exc: BaseException) -> str | None:
     if exc.status_code == 400 and "credit balance" in text:
         return ("У аккаунта Anthropic закончился кредит. Пополни в Console → Plans & Billing — "
                 "до тех пор я не отвечаю на свободный текст, но всё сохраняю.")
+    if exc.status_code == 400 and "usage limits" in text:
+        # A spend cap is not an empty balance and not a bad key: the account is
+        # fine, the workspace is simply out of budget until a date the API names.
+        # Without this the cap fell through to "модель не ответила", so Svetochka
+        # looked stupid instead of blocked (live, 2026-09-12).
+        import re
+        m = re.search(r"regain access on (\d{4}-\d{2}-\d{2})", str(exc))
+        until = f" Доступ вернётся {m.group(1)}." if m else ""
+        return ("Упёрлась в лимит расходов воркспейса Anthropic — это не кончившийся счёт "
+                f"и не сломанный ключ, а потолок трат.{until} Подними его в Console → "
+                "Settings → Limits. До тех пор я не отвечаю на свободный текст, но всё сохраняю.")
     if exc.status_code == 403:
         return "Ключу Anthropic не хватает прав (403). Проверь workspace ключа в Console."
     return None
