@@ -1,6 +1,6 @@
 # Spec: Svetochka — personal assistant
 
-**Status:** accepted 2026-09-03, version 0.9. Code is written strictly against this
+**Status:** accepted 2026-09-03, version 0.10. Code is written strictly against this
 document. Version history: 0.1 (09-01) base spec · 0.2 (09-02) Turilin's approach,
 hybrid, account reading · 0.3 (09-03) agent with tools, lists, second brain ·
 0.4 (09-03) memory, persona as a variable, provider comparison · 0.5 (09-03) own
@@ -8,7 +8,8 @@ Railway project, English-only documentation rule · 0.6 (09-03) multi-user-ready
 data model and `UserScope` · 0.7 (09-12) attachments and trip extraction, an
 optional `tz` on dated writes, the strict-schema budget · 0.8 (09-12) photos and
 documents as intake (FR-59…FR-61) · 0.9 (09-12) searching more than once
-(FR-62, FR-63) after three live misses.
+(FR-62, FR-63) after three live misses · 0.10 (09-12) what she remembers between
+messages (FR-64, FR-65).
 
 The research this spec grew out of (product, market research, tech lead / QA):
 `RESEARCH.md`. This document is the layer above it: requirements with acceptance
@@ -173,6 +174,8 @@ Every requirement has an acceptance criterion checkable by hand or by a test.
 | FR-60 | What is written on the file becomes searchable text | M | A boarding pass, a receipt, a screenshot of text or a PDF → its text is read once by the cheap model and stored with the note, so "что я сохранял про X" finds it |
 | FR-61 | A stored file comes back on request | S | "пришли тот чек" → the file itself into the chat, re-sent by its Telegram id without a second upload |
 | FR-62 | A read tool searches more than once before giving up | M | A search tool broadens by itself — mail plans queries precise→broad, the calendar tries both Russian spellings and then the past — and its result names what was tried, so the agent neither repeats the same words nor stops at the first miss. Test: the ladder is climbed to the rung that hits |
+| FR-64 | The recent conversation reaches the model, files included | M | The last exchanges are part of every call, bounded by count **and** by age so last month's conversation is not treated as current. A photo or a document is an exchange like any other: after sending a receipt, "сколько там вышло" is answered from the conversation, not by asking again. Test: a file turn appears in the history a following message is built from |
+| FR-65 | What was just found stays referenceable | M | When a tool finds something (an email, a trip, a note, an event), a short reference to it travels with that exchange, so the next message can build on it. "Найди билет" then "а обратный во сколько" must not search the mailbox a second time. Test: the second message's context names the first message's result, and no second search is made |
 | FR-63 | Finding the wrong thing is not an answer | M | A hit that matches none of the key terms of the request is shown but marked as probably not it; the reply says plainly that only other things were found. **Svetochka never hands the user a list of guesses to choose from instead of searching again.** Test: asked for Budapest with only a 2023 London ticket in the mailbox, the reply names neither London nor its booking code |
 
 ### 4.2. Knowledge
