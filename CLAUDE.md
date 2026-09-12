@@ -70,8 +70,16 @@ Working notes for Claude Code sessions on Svetochka.
   | role | openai | anthropic |
   |---|---|---|
   | agent, brief | `gpt-5.6-terra` | `claude-sonnet-5` |
-  | cheap (Gmail query planning, trip extraction) | `gpt-5.6-luna` | `claude-haiku-4-5` |
+  | plan (turning a request into Gmail queries) | `gpt-5.6-terra` | `claude-haiku-4-5` |
+  | cheap (trip extraction from a ticket) | `gpt-5.6-luna` | `claude-haiku-4-5` |
   | vision (attachments from chat and mail) | `gpt-5.6-luna` | `claude-haiku-4-5` |
+
+  **Planning is not extraction.** Asked to unfold "билеты в Колумбию" and "билет на
+  вечеринку" into Gmail queries, `gpt-5.6-luna` returned nothing usable twice out
+  of three and the tool fell back silently to the user's own words — the exact
+  failure FR-62 exists to prevent. `gpt-5.6-terra` unfolded all three into cities,
+  airports, airlines and three languages. Haiku planned well enough for 97% on
+  Anthropic, so the role is per provider, not per tier.
 
   Facts behind those picks, measured live on 2026-09-12: tools on gpt-5.6 need
   `/v1/responses` (Chat Completions refuses them); `gpt-5.6-luna` asks a
@@ -272,5 +280,17 @@ use the MCP for `/health` and logs from there.
   `cache_read_tokens` > 0 from the second step onward. The brief and the cheap
   Haiku path are untouched: their prompts are a few hundred tokens, under the
   minimum cacheable prefix.
+- **What she remembers between messages (FR-64/FR-65, spec v0.10, 2026-09-12).**
+  Four layers, different lifetimes: the current message's tool calls (the loop),
+  the recent conversation (`db.recent_exchanges`, 8 pairs **and** 24 hours, files
+  included), what those exchanges found (`ToolContext.found()` → `inbox_items.context`
+  → the next message's history), and facts (FR-45). Two bugs closed: files were
+  excluded from history by a filter older than attachments, and nothing a tool
+  found survived the message it was found in, so a follow-up question started the
+  search over. References are pointers, capped at six of 160 chars — they are
+  re-sent with every step, and the history is the part no provider can cache.
+  **The golden set cannot test this**: every scenario is one fresh message with no
+  history, so FR-64/FR-65 are covered only by the deterministic tests in
+  `tests/test_bot.py`.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model — through the provider interface, so no test imitates anyone's wire format; each provider's own translation is tested in `tests/test_providers.py`. 344 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model — through the provider interface, so no test imitates anyone's wire format; each provider's own translation is tested in `tests/test_providers.py`. 350 tests.
