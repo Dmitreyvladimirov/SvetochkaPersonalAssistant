@@ -4,14 +4,31 @@ import importlib
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_config():
+    """config reads os.environ at import, so a reload with a variable removed
+    outlives the test that did it and breaks every test after it in the session
+    (it did: 8 unrelated failures, 2026-09-12). The environment is restored by
+    hand rather than by monkeypatch, because an autouse fixture is torn down
+    BEFORE monkeypatch is and would reload the broken environment right back."""
+    import os
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+    import sveta.core.config as cfg
+    importlib.reload(cfg)
+
+
 def _reload(monkeypatch, **env):
     # A developer's .env must not leak into these tests: config reads it on import.
-    monkeypatch.setenv("SVETA_SKIP_DOTENV", "1")
+    import os
+    os.environ["SVETA_SKIP_DOTENV"] = "1"
     for k, v in env.items():
         if v is None:
-            monkeypatch.delenv(k, raising=False)
+            os.environ.pop(k, None)
         else:
-            monkeypatch.setenv(k, v)
+            os.environ[k] = v
     import sveta.core.config as cfg
     return importlib.reload(cfg)
 
@@ -42,8 +59,10 @@ def test_only_the_working_provider_key_is_required(monkeypatch):
                   sveta_openai_api=None)
     with pytest.raises(EnvironmentError) as exc:
         cfg.validate_secrets()
-    assert "OPENAI_API_KEY" in str(exc.value)
-    assert str(exc.value).count("OPENAI_API_KEY") == 1, "named once, not twice"
+    # On OpenAI the agent key and the Whisper key are the same entry; the list of
+    # missing names must not say it twice.
+    named = str(exc.value).split(":", 1)[1].split(" — ")[0]
+    assert named.count("OPENAI_API_KEY") == 1, named
 
 
 def test_each_provider_brings_its_own_default_models(monkeypatch):
@@ -89,3 +108,22 @@ def test_workspace_id_is_optional_and_accepts_alias(monkeypatch):
     cfg.validate_secrets()  # not required: a workspace-scoped key needs no id
     cfg = _reload(monkeypatch, SVETA_ANTHROPIC_WORKSPACE_ID="wrkspc_123")
     assert cfg.ANTHROPIC_WORKSPACE_ID == "wrkspc_123"
+
+
+def test_a_missing_provider_key_explains_that_the_provider_chose_it(monkeypatch):
+    """The digest cron crashed on 2026-09-12 with a bare "Missing required env
+    vars: OPENAI_API_KEY" right after the provider switch. The variable had not
+    been lost; the requirement had moved under the service."""
+    cfg = _reload(monkeypatch, SVETA_PROVIDER="openai", OPENAI_API_KEY=None, sveta_openai_api=None)
+    with pytest.raises(EnvironmentError) as exc:
+        cfg.validate_secrets("digest")
+    message = str(exc.value)
+    assert "OPENAI_API_KEY" in message and "SVETA_PROVIDER='openai'" in message
+    assert "digest" in message
+    # An unrelated missing variable is not blamed on the provider. _reload mutates
+    # the environment cumulatively, so the key removed above is put back by hand.
+    cfg = _reload(monkeypatch, SVETA_PROVIDER="openai", SVETA_WEBHOOK_SECRET=None,
+                  OPENAI_API_KEY="test-openai-key")
+    with pytest.raises(EnvironmentError) as exc:
+        cfg.validate_secrets("web")
+    assert "SVETA_PROVIDER" not in str(exc.value)

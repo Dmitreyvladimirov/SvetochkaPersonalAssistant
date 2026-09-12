@@ -160,8 +160,19 @@ REQUIRED_BY_ROLE: dict[str, tuple[tuple[str, ...], ...]] = {
 
 
 def validate_secrets(role: str = "web") -> None:
-    """Fail fast, and say exactly which variable is missing by its canonical name."""
+    """Fail fast, and say exactly which variable is missing by its canonical name.
+
+    Which key is required moves with SVETA_PROVIDER, so the message says so: the
+    `digest` cron crashed on 2026-09-12 with a bare "Missing required env vars:
+    OPENAI_API_KEY" after the provider switch, and nothing in it explained that
+    the requirement had changed under the service rather than the variable being
+    lost."""
     wanted = dict.fromkeys(REQUIRED_BY_ROLE.get(role, REQUIRED))   # the same key twice is one
     missing = [names[0] for names in wanted if not _env(*names)]
-    if missing:
-        raise EnvironmentError(f"Missing required env vars: {', '.join(missing)}")
+    if not missing:
+        return
+    why = ""
+    if _AGENT_KEY[0] in missing:
+        why = (f" — {_AGENT_KEY[0]} is what SVETA_PROVIDER={PROVIDER!r} needs; set it on this "
+               f"service, or set SVETA_PROVIDER to the provider whose key it already has")
+    raise EnvironmentError(f"Missing required env vars ({role}): {', '.join(missing)}{why}")

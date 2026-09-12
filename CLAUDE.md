@@ -42,7 +42,12 @@ Working notes for Claude Code sessions on Svetochka.
   cron service `digest` `e422f9c8-015d-45e5-af1c-104527387da0` (`*/15 * * * *`,
   `SERVICE_TYPE=digest`, variables as references to `sveta-web` and `Postgres`),
   cron service `ingest` `7426adc2-d2f7-46c7-9ea6-34a6ec60453f` (`0 */3 * * *`,
-  `SERVICE_TYPE=ingest`). Created 2026-09-12; deploy settings (healthcheck, cron,
+  `SERVICE_TYPE=ingest`).
+  **The cron services carry their own copy of the provider key.** `digest` needs
+  it (it composes the brief with the model) and crashed on every run for four
+  minutes after the OpenAI switch because it only had `ANTHROPIC_API_KEY`;
+  `OPENAI_API_KEY` is now set on it as `${{sveta-web.sveta_openai_api}}`. Changing
+  `SVETA_PROVIDER` means checking the crons, not only `sveta-web`. Created 2026-09-12; deploy settings (healthcheck, cron,
   start command) live on the services — Railway config files are deprecated.
   Public domain: `sveta-web-production.up.railway.app`; webhook path `/tg/webhook`.
 - Deploy is `bash run.sh`, role chosen by `SERVICE_TYPE` (see `SPEC.md` §7).
@@ -299,4 +304,4 @@ use the MCP for `/health` and logs from there.
   history, so FR-64/FR-65 are covered only by the deterministic tests in
   `tests/test_bot.py`.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model — through the provider interface, so no test imitates anyone's wire format; each provider's own translation is tested in `tests/test_providers.py`. 350 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model — through the provider interface, so no test imitates anyone's wire format; each provider's own translation is tested in `tests/test_providers.py`. 351 tests.
