@@ -280,6 +280,12 @@ use the MCP for `/health` and logs from there.
   `cache_read_tokens` > 0 from the second step onward. The brief and the cheap
   Haiku path are untouched: their prompts are a few hundred tokens, under the
   minimum cacheable prefix.
+- **Golden baseline on OpenAI: 95% (77/81) on `gpt-5.6-terra`**, 2026-09-12,
+  6 min 23 s, against the seeded world with reply assertions. Smoke subset: 100%
+  (13/13). Not comparable to the 97% Anthropic scored the same day — that was 65
+  scenarios, no reply assertions, no connected Google. Re-baseline per provider,
+  never across. Of the four misses, three were bad assertions of mine and are
+  fixed; the real one is "что мне писал Костя?" going to notes instead of mail.
 - **What she remembers between messages (FR-64/FR-65, spec v0.10, 2026-09-12).**
   Four layers, different lifetimes: the current message's tool calls (the loop),
   the recent conversation (`db.recent_exchanges`, 8 pairs **and** 24 hours, files

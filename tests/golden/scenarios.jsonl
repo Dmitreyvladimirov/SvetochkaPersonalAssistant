@@ -35,7 +35,7 @@
 {"message": "какие у меня заметки с инстаграма?", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["note_save"]}
 {"message": "запиши факт: врач Иванова, приём по вторникам", "expect_tools_any": ["fact_remember", "note_save"], "forbid_tools": ["reminder_create"]}
 {"message": "я передумал, отвечай как раньше, не так коротко", "expect_tools_any": ["preference_set", "preference_delete"], "forbid_tools": ["note_save"]}
-{"message": "что я тебе говорил про Костю?", "expect_tools": ["note_search"], "forbid_tools": ["note_save"]}
+{"message": "что я тебе говорил про Костю?", "forbid_tools": ["note_save"], "expect_tools_any": ["fact_recall", "note_search"]}
 {"message": "идея: сделать Светочке кнопку «повтори вчерашний бриф»", "expect_tools": ["note_save"]}
 {"message": "просто хочу сказать что ты молодец", "forbid_tools": ["note_save", "note_search", "preference_set"]}
 {"message": "напомни в четверг в 11 позвонить в банк", "expect_tools": ["reminder_create"], "forbid_tools": ["note_save", "list_add"]}
@@ -67,7 +67,7 @@
 {"message": "найди мой билет на вечеринку в эту субботу", "expect_tools": ["mail_search"], "forbid_tools": ["note_search", "calendar_query"]}
 {"message": "найди счёт за электричество за прошлый месяц", "expect_tools": ["mail_search"], "forbid_tools": ["note_search"]}
 {"message": "пришли мне чек, который я скидывал", "expect_tools_any": ["note_search", "note_recent"], "forbid_tools": ["mail_search"]}
-{"message": "вот скан посадочного", "expect_tools_any": ["note_save"], "forbid_tools": ["reminder_create", "list_add"]}
+{"message": "вот скан посадочного, сохрани", "forbid_tools": ["reminder_create", "list_add", "calendar_create"], "forbid_reply": ["сохранила", "записала"]}
 {"message": "найди мои билеты в Будапешт", "expect_tools": ["mail_search"], "forbid_reply": ["DDDK6P"], "forbid_tools": ["calendar_create"], "smoke": true, "expect_reply": ["не нашла"]}
 {"message": "найди мой билет на вечеринку в эту субботу", "expect_tools": ["mail_search"], "forbid_reply": ["Bilettix", "попробовать другие слова"]}
 {"message": "когда мой рейс в Боготу?", "expect_tools": ["mail_search"], "expect_reply": ["7PVOQO"], "smoke": true}
