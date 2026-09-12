@@ -82,11 +82,18 @@ receive Telegram traffic — that is intended; test the agent through `pytest` a
 the golden set instead:
 
 ```
-SVETA_GOLDEN=1 ANTHROPIC_API_KEY=... python -m pytest -m golden -q -s
+SVETA_GOLDEN=smoke ANTHROPIC_API_KEY=... python -m pytest -m golden -q -s   # 13 scenarios, ~$0.12
+SVETA_GOLDEN=1     ANTHROPIC_API_KEY=... python -m pytest -m golden -q -s   # all 81, ~$0.76
 ```
 
 (with `SVETA_ANTHROPIC_WORKSPACE_ID=...` too if the key is identity-linked).
-Costs cents; prints the pass rate and every miss; threshold 90%.
+Prints the pass rate and every miss; threshold 90%.
+
+**Use `smoke` while iterating and the full set before a release.** Eight full
+runs in one day on 2026-09-11 cost ~$18 and pushed the workspace over its spend
+cap, which took production down with it — the golden key and the production key
+are the same key. The 331 ordinary tests are free and catch the logic; the golden
+set only measures what code cannot check, which is the model's judgement.
 
 Logs and deployments: Railway dashboard, or the Railway MCP with the ids above.
 The public domain is not reachable from Claude Code on the web (egress proxy);
@@ -239,4 +246,4 @@ use the MCP for `/health` and logs from there.
   Haiku path are untouched: their prompts are a few hundred tokens, under the
   minimum cacheable prefix.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model. 329 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model. 331 tests.
