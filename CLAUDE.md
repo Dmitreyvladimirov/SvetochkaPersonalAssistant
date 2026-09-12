@@ -223,5 +223,20 @@ use the MCP for `/health` and logs from there.
   Console (Settings → Limits, the workspace the key belongs to) or wait for
   2026-10-01, then `SVETA_GOLDEN=1 pytest -m golden -q`. The run now stops on a
   dead credential and reports the scenarios it already paid for.
+- **Prompt caching (2026-09-12).** SPEC.md §7.1 costed the assistant on "system
+  prompt and schemas cached"; the code never did it, so ~5 100 tokens of tool
+  schemas plus persona went out on every step of every message — about 80% of each
+  bill. Two breakpoints in `sveta/core/agent.py`: `cached_definitions` marks the
+  last tool (tools precede the system prompt in the cached prefix, so one marker
+  covers all 26), and `system_blocks` splits the prompt so the constant persona is
+  cached while preferences, corrections and tz sit after the breakpoint and
+  invalidate nothing. `llm.price` bills writes at 1.25x and reads at 0.1x;
+  `llm_call` gained `cache_write_tokens` / `cache_read_tokens` so the saving shows
+  up in the data. Projected: $0.028 → $0.009 a message, $25 → $8 a month at 30
+  messages a day, $2.25 → $0.76 a golden run. **Not verified against the live API
+  yet** — the key is capped until 2026-10-01; the first real run should show
+  `cache_read_tokens` > 0 from the second step onward. The brief and the cheap
+  Haiku path are untouched: their prompts are a few hundred tokens, under the
+  minimum cacheable prefix.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model. 322 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model. 329 tests.
