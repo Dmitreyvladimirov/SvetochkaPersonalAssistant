@@ -61,8 +61,26 @@ Working notes for Claude Code sessions on Svetochka.
   integration, redirect `…/oauth/notion/callback`); `NOTION_TOKEN` is an optional
   fallback (internal integration). Tokens per user live encrypted in `oauth_tokens`,
   landed by `/connect` → consent → callback; nobody pastes a token anywhere.
-- Models: `claude-sonnet-5` for the agent and the brief, `claude-haiku-4-5` for
-  the cheap path. IDs without date suffixes.
+- **Provider is `SVETA_PROVIDER`, default `openai`** (SPEC §7.1, revised
+  2026-09-12). Everything house-specific lives in `sveta/core/providers/`;
+  `agent.py`, the tools and the playbooks never see a provider-shaped request.
+  Models by role, not by tier — `AGENT_MODEL`, `CHEAP_MODEL`, `VISION_MODEL`,
+  `BRIEF_MODEL`, each overridable by its own variable:
+
+  | role | openai | anthropic |
+  |---|---|---|
+  | agent, brief | `gpt-5.6-terra` | `claude-sonnet-5` |
+  | cheap (Gmail query planning, trip extraction) | `gpt-5.6-luna` | `claude-haiku-4-5` |
+  | vision (attachments from chat and mail) | `gpt-5.6-luna` | `claude-haiku-4-5` |
+
+  Facts behind those picks, measured live on 2026-09-12: tools on gpt-5.6 need
+  `/v1/responses` (Chat Completions refuses them); `gpt-5.6-luna` asks a
+  clarifying question where `gpt-5.6-terra` calls the tool, so the cheap tier
+  cannot run the agent; both `gpt-5.6-luna` and `gpt-5.4-nano` read a ticket PDF
+  complete, and nano is cheaper again — move `VISION_MODEL` to it once its rate is
+  confirmed. IDs without date suffixes.
+- Only the working provider's key is required at startup. The OpenAI key is needed
+  either way: Whisper is OpenAI whoever runs the agent.
 - Telegram bot: `@dmitreyvladimirovic_bot`. Only Dimitry's chat is registered.
 
 ## Local development
@@ -223,13 +241,22 @@ use the MCP for `/health` and logs from there.
   misses. Scenarios carry `expect_reply` / `forbid_reply` (81 of them), and
   `tests/test_mail.py` replays the three live misses against that same mailbox for
   free.
-- **Open: the golden set cannot be run.** The Anthropic key hit its workspace
-  spend cap on 2026-09-11 mid-run ("You have reached your specified API usage
-  limits. You will regain access on 2026-10-01 at 00:00 UTC"), so the 75-scenario
-  set has never run against the seeded world. Raise the cap in the Anthropic
-  Console (Settings → Limits, the workspace the key belongs to) or wait for
-  2026-10-01, then `SVETA_GOLDEN=1 pytest -m golden -q`. The run now stops on a
-  dead credential and reports the scenarios it already paid for.
+- **The outage of 2026-09-11/12, and what it cost.** Eight full golden runs in one
+  day (~$18) pushed the Anthropic workspace over its spend cap. The golden key and
+  the production key were the same key, so Svetochka stopped answering entirely —
+  every agent call 400ed with "You have reached your specified API usage limits.
+  You will regain access on 2026-10-01" — and, because `classify_error` knew only
+  an empty balance and a bad key, she answered "не смогла разобрать" to everything
+  instead of naming the cap. From the chat this read as her getting stupid. Three
+  fixes: FR-39 names a spend cap and its date; `SVETA_GOLDEN=smoke` runs 13
+  scenarios instead of 81; and the provider seam means one house's cap can no
+  longer silence her.
+- **Still worth doing: a separate key for tests**, with its own low limit, so a
+  run cannot reach production's budget whatever happens. Needs Dimitry.
+- **Messages that arrive while the model is refusing are lost.** `bot._run_agent`
+  marks the item `failed` and nothing ever revisits it, so everything Dimitry sent
+  during the outage is in `inbox_items` unanswered. A sweep that retries them when
+  the model comes back is not written yet.
 - **Prompt caching (2026-09-12).** SPEC.md §7.1 costed the assistant on "system
   prompt and schemas cached"; the code never did it, so ~5 100 tokens of tool
   schemas plus persona went out on every step of every message — about 80% of each
@@ -246,4 +273,4 @@ use the MCP for `/health` and logs from there.
   Haiku path are untouched: their prompts are a few hundred tokens, under the
   minimum cacheable prefix.
 - Tests never touch Postgres or the model: `tests/fakedb.py` filters by `user_id`
-  exactly where the SQL does, `tests/fakellm.py` scripts the model. 331 tests.
+  exactly where the SQL does, `tests/fakellm.py` scripts the model — through the provider interface, so no test imitates anyone's wire format; each provider's own translation is tested in `tests/test_providers.py`. 344 tests.
