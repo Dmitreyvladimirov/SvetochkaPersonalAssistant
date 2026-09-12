@@ -461,7 +461,7 @@ openai.com before a final decision.**
 | Smart (agent, brief) | Sonnet 5 | 2 / 10 | GPT-5.6 Terra | 2 / 12 |
 | Cheap (fast path, fields from voice) | Haiku 4.5 | 1 / 5 | GPT-5.6 Luna | 0.20 / 1.20 |
 | Top (not needed) | Opus 5 | 5 / 25 | GPT-5.6 Sol | 5 / 30 |
-| Cached input | ~10% | | 10% | |
+| Cached input | ~10%, marked explicitly | | 10%, automatic on the prefix | |
 
 **At the "smart" tier there is no price difference.** OpenAI is noticeably cheaper
 only at the small tier, which is the smaller part of Svetochka's budget.
@@ -483,10 +483,33 @@ Haiku in intake; (2) tool-use quality in Russian must be measured on our own gol
 set, not taken from benchmarks; (3) tools are provider-neutral by construction — only
 the loop is provider-specific, ~100 lines.
 
-**Decision:** start on Anthropic. After two weeks of live traffic, measure real cost
-from `llm_call` and quality on the golden set. If OpenAI is noticeably cheaper or
-better — an adapter and a shadow comparison on the same traffic, as was done with
-cloud scoring. No provider change without numbers.
+**Decision (2026-09-03):** start on Anthropic. After two weeks of live traffic,
+measure real cost from `llm_call` and quality on the golden set. If OpenAI is
+noticeably cheaper or better — an adapter and a shadow comparison on the same
+traffic, as was done with cloud scoring. No provider change without numbers.
+
+**Revised (2026-09-12), Dimitry's call.** The adapter was built and OpenAI is the
+default (`SVETA_PROVIDER`). The trigger was not price: the Anthropic workspace hit
+its spend cap mid-run, and because the golden set and production share one key,
+Svetochka stopped answering entirely until 2026-10-01. A single account that
+testing can take down is the risk this addresses, and the adapter keeps both
+houses reachable so the choice stays reversible and measurable.
+
+Two things measured before the switch, on live calls rather than from price lists:
+
+- Function tools on the gpt-5.6 generation require `/v1/responses`; Chat
+  Completions refuses them outright. The loop is unchanged, the provider absorbs it.
+- The tiers are not interchangeable by role. `gpt-5.6-terra` calls tools correctly
+  where `gpt-5.6-luna` asks a clarifying question instead, so the cheap tier cannot
+  run the agent — but both cheap tiers read a ticket PDF complete, so reading
+  attachments gets its own model role (`VISION_MODEL`), the highest-volume paid
+  call Svetochka makes and now the cheapest.
+
+Reasoning tokens are billed as output on this generation (51 of 81 in one measured
+reply), so no saving is claimed until it is read off `llm_call`. The golden set is
+the arbiter of quality, not this table: 92% on the smoke subset on `gpt-5.6-terra`
+against 97% on the full set on `claude-sonnet-5`, which are different sets and not
+yet comparable. Run both in full before treating either number as a verdict.
 
 ### 7.2. Code layout
 
