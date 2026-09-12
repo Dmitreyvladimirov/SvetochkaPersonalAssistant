@@ -209,7 +209,8 @@ class FakeDB:
 
     # cost
     def record_llm_call(self, user_id, inbox_item_id, purpose, model, usage, cost_usd, latency_ms):
-        self.llm_calls.append({"user_id": user_id, "purpose": purpose, "cost_usd": cost_usd})
+        self.llm_calls.append({"user_id": user_id, "purpose": purpose, "cost_usd": cost_usd,
+                               "model": model, "usage": dict(usage)})
 
     def spend_today(self, user_id):
         return sum(c["cost_usd"] for c in self.llm_calls if c["user_id"] == user_id)

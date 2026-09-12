@@ -293,6 +293,8 @@ def schema_statements() -> list[str]:
                 model         TEXT NOT NULL,
                 input_tokens  INTEGER,
                 output_tokens INTEGER,
+                cache_write_tokens INTEGER,
+                cache_read_tokens  INTEGER,
                 cost_usd      NUMERIC(10, 6),
                 latency_ms    INTEGER,
                 created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -327,6 +329,10 @@ def schema_statements() -> list[str]:
         # bytes stay with Telegram (§8) and file_id is enough to send it back.
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_name TEXT",
         "ALTER TABLE inbox_items ADD COLUMN IF NOT EXISTS file_mime TEXT",
+        # Prompt caching (2026-09-12): without these two the saving is invisible
+        # in the data, and the whole point of caching is being able to measure it.
+        "ALTER TABLE llm_call ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
+        "ALTER TABLE llm_call ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER",
     ]
 
 
@@ -729,10 +735,11 @@ def record_llm_call(user_id: int, inbox_item_id: int | None, purpose: str, model
                     cur.execute(
                         """INSERT INTO llm_call
                            (user_id, inbox_item_id, purpose, model, input_tokens, output_tokens,
-                            cost_usd, latency_ms)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                            cache_write_tokens, cache_read_tokens, cost_usd, latency_ms)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (user_id, inbox_item_id, purpose, model, usage.get("input_tokens"),
-                         usage.get("output_tokens"), cost_usd, latency_ms),
+                         usage.get("output_tokens"), usage.get("cache_write_tokens", 0),
+                         usage.get("cache_read_tokens", 0), cost_usd, latency_ms),
                     )
         finally:
             conn.close()

@@ -24,13 +24,22 @@ class BudgetExceeded(Exception):
     """Today's spend for this user is over the line. Retrying makes it worse."""
 
 
+# Writing the cache costs a quarter more than sending the tokens plainly; reading
+# it back costs a tenth. A run that ignored this would under-report the first call
+# of a conversation and over-report every one after it.
+CACHE_WRITE_RATE = 1.25
+CACHE_READ_RATE = 0.10
+
+
 def price(model: str, usage: dict) -> float:
     rates = PRICES.get(model)
     if not rates:
         logger.warning("llm: no price for model %r — recording 0", model)
         return 0.0
     in_rate, out_rate = rates
-    return (usage.get("input_tokens", 0) / 1e6 * in_rate
+    return ((usage.get("input_tokens", 0)
+             + usage.get("cache_write_tokens", 0) * CACHE_WRITE_RATE
+             + usage.get("cache_read_tokens", 0) * CACHE_READ_RATE) / 1e6 * in_rate
             + usage.get("output_tokens", 0) / 1e6 * out_rate)
 
 
@@ -55,8 +64,14 @@ def client():
 
 
 def usage_of(response) -> dict:
-    return {"input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens}
+    """`input_tokens` from the API already excludes what was cached, so the three
+    counts add up rather than overlap. getattr, not attribute access: a response
+    from a model or a stub without caching has neither field."""
+    u = response.usage
+    return {"input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_write_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+            "cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0}
 
 
 class Timer:

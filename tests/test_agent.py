@@ -85,7 +85,7 @@ def test_history_and_preferences_reach_the_model(monkeypatch):
     s = UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem", preferences={"persona.brevity": "3"})
     agent.run(s, "привет", client=client, history=[{"raw_text": "раньше", "reply_text": "было так"}])
     req = client.messages.requests[0]
-    assert "persona.brevity: 3" in req["system"]
+    assert "persona.brevity: 3" in req["system"][-1]["text"]
     assert req["messages"][0] == {"role": "user", "content": "раньше"}
     assert req["messages"][-1]["content"] == "привет"
     assert req["output_config"] == {"effort": "low"}
@@ -110,3 +110,65 @@ def test_tool_exception_is_reported_not_raised(monkeypatch):
     r = agent.run(scope(), "x", client=client)
     assert r.reply == "не вышло"
     assert "db down" in client.messages.requests[1]["messages"][-1]["content"][0]["content"]
+
+
+def test_the_constant_part_of_the_prompt_is_cached_and_the_personal_part_is_not(monkeypatch):
+    """SPEC.md §7.1 costed the assistant on "system prompt and schemas cached".
+    The tool schemas and the persona are ~5 100 tokens resent on every step, so
+    without the breakpoints a two-step message pays for them twice."""
+    install(monkeypatch)
+    client = FakeClient(["ок"])
+    s = UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem", preferences={"persona.brevity": "3"})
+    agent.run(s, "привет", client=client)
+    req = client.messages.requests[0]
+    persona, personal = req["system"]
+    assert persona["cache_control"] == {"type": "ephemeral"}
+    assert "Светочка" in persona["text"] and "persona.brevity" not in persona["text"]
+    # The half that changes when the user sets a preference sits after the
+    # breakpoint, so setting one invalidates nothing.
+    assert "cache_control" not in personal and "persona.brevity: 3" in personal["text"]
+    assert req["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert sum("cache_control" in d for d in req["tools"]) == 1
+
+
+def test_the_cache_marker_never_reaches_the_registry(monkeypatch):
+    """cached_definitions works on a copy: the registry's own schemas are checked
+    by test_every_tool_schema_is_closed_and_writers_are_strict."""
+    from sveta.tools import REGISTRY, definitions
+    agent.cached_definitions(REGISTRY)
+    assert all("cache_control" not in d for d in definitions(REGISTRY))
+
+
+def test_two_users_share_the_cached_prefix(monkeypatch):
+    """The persona block is byte-identical across users, which is what lets the
+    prefix be a cache hit for the second one."""
+    install(monkeypatch)
+    a = agent.system_blocks(UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"))
+    b = agent.system_blocks(UserScope(user_id=2, chat_id="222", tz="Europe/Berlin",
+                                      preferences={"persona.brevity": "1"}))
+    assert a[0] == b[0]
+    assert a[1] != b[1]
+
+
+def test_a_missing_persona_file_does_not_send_an_empty_block(monkeypatch):
+    """The API rejects an empty text block, and a missing playbook is survivable."""
+    install(monkeypatch)
+    monkeypatch.setattr(agent, "_PERSONA", agent._PERSONA.parent / "nope.md")
+    blocks = agent.system_blocks(UserScope(user_id=1, chat_id="111", tz="UTC"))
+    assert len(blocks) == 1 and blocks[0]["text"].strip()
+    assert "cache_control" not in blocks[0]
+
+
+def test_the_cached_prefix_is_identical_on_every_step(monkeypatch):
+    """What silently destroys caching is a prefix that differs between steps: the
+    write is paid every time and nothing is ever read back. Two steps, one tool
+    call in between, and the tools and system must arrive byte-identical."""
+    install(monkeypatch)
+    client = FakeClient([[("note_save", {"body": "x", "project": "", "url": ""})], "готово"])
+    agent.run(UserScope(user_id=1, chat_id="111", tz="Asia/Jerusalem"), "запиши x", client=client)
+    first, second = client.messages.requests[0], client.messages.requests[1]
+    assert first["system"] == second["system"]
+    assert first["tools"] == second["tools"]
+    # The fake records the live list, so lengths cannot be compared here; what
+    # matters is that nothing was inserted ahead of the user's own turn.
+    assert second["messages"][0] == {"role": "user", "content": "запиши x"}

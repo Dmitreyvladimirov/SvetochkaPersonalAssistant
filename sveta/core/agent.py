@@ -38,19 +38,54 @@ class AgentResult:
     truncated: bool = False
 
 
-def system_prompt(scope: UserScope) -> str:
-    persona = _PERSONA.read_text(encoding="utf-8") if _PERSONA.exists() else ""
+# The prompt is built in two halves so the constant one can be cached. SPEC.md
+# §7.1 costed the whole assistant on "system prompt and schemas cached" and the
+# code never did it: the tool schemas and the persona are ~5 100 tokens resent on
+# every step of every message, about 80% of each bill (measured 2026-09-12).
+CACHE = {"type": "ephemeral"}
+
+
+def system_blocks(scope: UserScope) -> list[dict]:
+    """[the persona, cached] + [this user's preferences, corrections and tz].
+
+    The split is what makes caching work: the persona is identical for everyone
+    and every call, so it stays a stable prefix, while the tail that changes when
+    the user sets a preference sits after the breakpoint and invalidates nothing.
+    """
+    persona = (_PERSONA.read_text(encoding="utf-8") if _PERSONA.exists() else "").strip()
+    lines = []
     prefs = scope.preferences
-    lines = [persona.strip()]
     if prefs:
-        lines.append("\nПредпочтения пользователя (действуют всегда):")
+        lines.append("Предпочтения пользователя (действуют всегда):")
         lines += [f"- {k}: {v}" for k, v in sorted(prefs.items())]
     corrections = _corrections(scope)
     if corrections:
         lines.append("\nПрошлые поправки пользователя (учитывай, не повторяй ошибку):")
         lines += [f"- сделала: {c['did']} → надо было: {c['should_have']}" for c in corrections]
     lines.append(f"\nЧасовой пояс пользователя: {scope.tz}.")
-    return "\n".join(lines)
+    blocks = []
+    if persona:
+        # An empty text block is rejected by the API, and a missing persona file
+        # is survivable (the loop still works) — so the marker moves rather than
+        # taking an empty block with it.
+        blocks.append({"type": "text", "text": persona, "cache_control": CACHE})
+    blocks.append({"type": "text", "text": "\n".join(lines)})
+    return blocks
+
+
+def system_prompt(scope: UserScope) -> str:
+    """The same prompt as one string, for tests and for reading it in a log."""
+    return "\n\n".join(b["text"] for b in system_blocks(scope) if b["text"])
+
+
+def cached_definitions(tools) -> list[dict]:
+    """Tool schemas with a cache breakpoint on the last one. Tools come before the
+    system prompt in the cached prefix, so this one marker covers all of them; it
+    is put on a copy because the registry's schemas are checked by their own test."""
+    defs = [dict(d) for d in definitions(tools)]
+    if defs:
+        defs[-1]["cache_control"] = CACHE
+    return defs
 
 
 def _corrections(scope: UserScope) -> list[dict]:
@@ -94,7 +129,7 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
 
     messages = _history_messages(history or [])
     messages.append({"role": "user", "content": text[:config.MAX_MESSAGE_CHARS]})
-    tool_defs = definitions(tools)
+    tool_defs = cached_definitions(tools)
     seen_calls: set[str] = set()
     final_text_parts: list[str] = []
 
@@ -108,7 +143,7 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
             response = client.messages.create(
                 model=config.AGENT_MODEL,
                 max_tokens=1500,
-                system=system_prompt(scope),
+                system=system_blocks(scope),
                 messages=messages,
                 tools=tool_defs,
                 output_config={"effort": "low"},
