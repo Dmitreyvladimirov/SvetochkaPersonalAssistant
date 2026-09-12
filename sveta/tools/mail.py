@@ -57,15 +57,15 @@ def _plan_queries(scope: UserScope, ctx: ToolContext, what: str, when: str) -> t
     ask = what if not when else f"{what} (срок: {when})"
     try:
         llm.check_budget(scope.user_id)
+        client = _client()
         with llm.Timer() as t:
-            response = _client().messages.create(
-                model=config.CHEAP_MODEL, max_tokens=600,
-                system=_QUERY_SYSTEM.format(today=date.today().isoformat()),
+            answer = llm.complete(
+                client, model=config.CHEAP_MODEL, max_tokens=600,
+                system=[{"type": "text", "text": _QUERY_SYSTEM.format(today=date.today().isoformat())}],
                 messages=[{"role": "user", "content": ask[:500]}])
-        usage = llm.usage_of(response)
-        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "mailquery", config.CHEAP_MODEL, usage,
-                           llm.price(config.CHEAP_MODEL, usage), t.ms)
-        data = _json_object("".join(b.text for b in response.content if b.type == "text")) or {}
+        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "mailquery", config.CHEAP_MODEL,
+                           answer.usage, llm.price(config.CHEAP_MODEL, answer.usage), t.ms)
+        data = _json_object(answer.text) or {}
     except llm.BudgetExceeded:
         return fallback
     except Exception as e:  # noqa: BLE001 — the type only; the request is not logged
@@ -295,15 +295,14 @@ def _extract_trip(scope: UserScope, ctx: ToolContext, gmail_id: str) -> str:
         return "Error: could not decrypt the message."
     try:
         llm.check_budget(scope.user_id)
-        client = llm.client()
+        client = _client()
         with llm.Timer() as t:
-            response = client.messages.create(model=config.CHEAP_MODEL, max_tokens=1200, system=_EXTRACT_SYSTEM,
-                                              messages=[{"role": "user", "content": body[:12000]}])
-        usage = llm.usage_of(response)
-        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "extract", config.CHEAP_MODEL, usage,
-                           llm.price(config.CHEAP_MODEL, usage), t.ms)
-        text = "".join(b.text for b in response.content if b.type == "text")
-        data = _json_object(text)
+            answer = llm.complete(client, model=config.CHEAP_MODEL, max_tokens=1200,
+                                  system=[{"type": "text", "text": _EXTRACT_SYSTEM}],
+                                  messages=[{"role": "user", "content": body[:12000]}])
+        db.record_llm_call(scope.user_id, ctx.inbox_item_id, "extract", config.CHEAP_MODEL,
+                           answer.usage, llm.price(config.CHEAP_MODEL, answer.usage), t.ms)
+        data = _json_object(answer.text)
     except llm.BudgetExceeded as e:
         return f"Error: daily budget exhausted ({e})."
     except Exception as e:  # noqa: BLE001 — the type only: an email body must never be logged

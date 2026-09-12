@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sveta.core import config, llm
+from sveta.core.providers import ToolOutput
 from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import REGISTRY, UnknownTool, definitions, run as run_tool
 
@@ -39,10 +40,11 @@ class AgentResult:
 
 
 # The prompt is built in two halves so the constant one can be cached. SPEC.md
-# §7.1 costed the whole assistant on "system prompt and schemas cached" and the
-# code never did it: the tool schemas and the persona are ~5 100 tokens resent on
-# every step of every message, about 80% of each bill (measured 2026-09-12).
-CACHE = {"type": "ephemeral"}
+# §7.1 costed the whole assistant on "system prompt and schemas cached": the tool
+# schemas and the persona are ~5 100 tokens resent on every step of every message,
+# about 80% of each bill (measured 2026-09-12). Where the breakpoint physically
+# goes is the provider's business — Anthropic marks it, OpenAI caches the prefix
+# by itself — so this module only guarantees the halves are in the right order.
 
 
 def system_blocks(scope: UserScope) -> list[dict]:
@@ -65,10 +67,9 @@ def system_blocks(scope: UserScope) -> list[dict]:
     lines.append(f"\nЧасовой пояс пользователя: {scope.tz}.")
     blocks = []
     if persona:
-        # An empty text block is rejected by the API, and a missing persona file
-        # is survivable (the loop still works) — so the marker moves rather than
-        # taking an empty block with it.
-        blocks.append({"type": "text", "text": persona, "cache_control": CACHE})
+        # An empty block is rejected by the API, and a missing persona file is
+        # survivable (the loop still works), so the block is dropped, not emptied.
+        blocks.append({"type": "text", "text": persona})
     blocks.append({"type": "text", "text": "\n".join(lines)})
     return blocks
 
@@ -76,16 +77,6 @@ def system_blocks(scope: UserScope) -> list[dict]:
 def system_prompt(scope: UserScope) -> str:
     """The same prompt as one string, for tests and for reading it in a log."""
     return "\n\n".join(b["text"] for b in system_blocks(scope) if b["text"])
-
-
-def cached_definitions(tools) -> list[dict]:
-    """Tool schemas with a cache breakpoint on the last one. Tools come before the
-    system prompt in the cached prefix, so this one marker covers all of them; it
-    is put on a copy because the registry's schemas are checked by their own test."""
-    defs = [dict(d) for d in definitions(tools)]
-    if defs:
-        defs[-1]["cache_control"] = CACHE
-    return defs
 
 
 def _corrections(scope: UserScope) -> list[dict]:
@@ -108,11 +99,8 @@ def _history_messages(history: list[dict]) -> list[dict]:
     return out
 
 
-def _tool_result(tool_use_id: str, content: str, is_error: bool = False) -> dict:
-    block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
-    if is_error:
-        block["is_error"] = True
-    return block
+def _tool_result(call_id: str, content: str, is_error: bool = False) -> ToolOutput:
+    return ToolOutput(call_id=call_id, content=content, is_error=is_error)
 
 
 def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
@@ -129,7 +117,7 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
 
     messages = _history_messages(history or [])
     messages.append({"role": "user", "content": text[:config.MAX_MESSAGE_CHARS]})
-    tool_defs = cached_definitions(tools)
+    tool_defs = definitions(tools)
     seen_calls: set[str] = set()
     final_text_parts: list[str] = []
 
@@ -140,29 +128,22 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
             break
 
         with llm.Timer() as t:
-            response = client.messages.create(
-                model=config.AGENT_MODEL,
-                max_tokens=1500,
-                system=system_blocks(scope),
-                messages=messages,
-                tools=tool_defs,
-                output_config={"effort": "low"},
-            )
-        usage = llm.usage_of(response)
-        llm_db_record(scope, inbox_item_id, purpose, usage, t.ms)
+            answer = llm.complete(client, model=config.AGENT_MODEL, max_tokens=1500,
+                                  system=system_blocks(scope), messages=messages,
+                                  tools=tool_defs, effort="low")
+        llm_db_record(scope, inbox_item_id, purpose, answer.usage, t.ms)
         result.steps += 1
 
-        text_parts = [b.text for b in response.content if b.type == "text" and b.text.strip()]
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-        final_text_parts = text_parts or final_text_parts
+        tool_uses = answer.tool_calls
+        final_text_parts = [answer.text] if answer.text else final_text_parts
 
         if not tool_uses:
             break
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.extend(answer.turn)
         results = []
         for tu in tool_uses:
-            args = tu.input if isinstance(tu.input, dict) else {}
+            args = tu.args
             result.tool_calls.append((tu.name, args))
             key = tu.name + json.dumps(args, sort_keys=True, ensure_ascii=False)
             if key in seen_calls:
@@ -209,7 +190,7 @@ def run(scope: UserScope, text: str, *, inbox_item_id: int | None = None,
                 results.append(_tool_result(tu.id, f"Error: {tu.name} failed: {str(e)[:300]}", True))
                 continue
             results.append(_tool_result(tu.id, out))
-        messages.append({"role": "user", "content": results})
+        messages.extend(llm.tool_results(client, results))
 
     reply = "\n".join(final_text_parts).strip()
     if result.truncated and not reply:

@@ -180,12 +180,12 @@ def compose(kind: str, sections: dict[str, list[str]], prefs: dict, user_id: int
         if kind == "review":
             system = system.replace("утренний бриф", "вечерний обзор: что осталось незакрытым")
         with llm.Timer() as t:
-            response = client.messages.create(model=config.BRIEF_MODEL, max_tokens=600, system=system,
-                                              messages=[{"role": "user", "content": base}])
-        usage = llm.usage_of(response)
-        cost = llm.price(config.BRIEF_MODEL, usage)
-        db.record_llm_call(user_id, None, kind, config.BRIEF_MODEL, usage, cost, t.ms)
-        text = "\n".join(b.text for b in response.content if b.type == "text").strip()
+            answer = llm.complete(client, model=config.BRIEF_MODEL, max_tokens=600,
+                                  system=[{"type": "text", "text": system}],
+                                  messages=[{"role": "user", "content": base}])
+        cost = llm.price(config.BRIEF_MODEL, answer.usage)
+        db.record_llm_call(user_id, None, kind, config.BRIEF_MODEL, answer.usage, cost, t.ms)
+        text = answer.text
         lines = [l for l in text.splitlines() if l.strip()]
         if not lines or len(lines) > MAX_LINES:
             logger.warning("brief: model text rejected (%d lines) — using the template", len(lines))

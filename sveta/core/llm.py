@@ -1,23 +1,29 @@
 """The only module that holds a model API key, and the only one that prices calls.
 
 Every paid call is priced and recorded before its result is used, so the first
-surprising bill is not also the first data point (FR-38).
+surprising bill is not also the first data point (FR-38). Which house answers is
+`config.PROVIDER`; the call itself lives in `sveta/core/providers/` and this
+module never sees a provider-shaped request or reply.
 """
 import logging
 import time
 
 from sveta.core import config, db
+from sveta.core import providers
 
 logger = logging.getLogger(__name__)
 
-# USD per million tokens, from the Anthropic pricing table (cache 2026-06-24). A wrong
-# number here shows up as a wrong budget alert, never as a wrong answer — which is
-# why an unknown model is priced at 0 and logged rather than raising.
-PRICES = {
-    "claude-haiku-4-5": (1.00, 5.00),
-    "claude-sonnet-5": (2.00, 10.00),
-    "claude-opus-5": (5.00, 25.00),
-}
+
+def provider():
+    """The module that speaks to the configured house."""
+    return providers.get(config.PROVIDER)
+
+
+def prices() -> dict:
+    """Every provider's table, so a row recorded under the other one still prices
+    correctly after a switch — the llm_call history outlives the choice."""
+    from sveta.core.providers import anthropic_api, openai_api
+    return {**anthropic_api.PRICES, **openai_api.PRICES}
 
 
 class BudgetExceeded(Exception):
@@ -32,7 +38,7 @@ CACHE_READ_RATE = 0.10
 
 
 def price(model: str, usage: dict) -> float:
-    rates = PRICES.get(model)
+    rates = prices().get(model)
     if not rates:
         logger.warning("llm: no price for model %r — recording 0", model)
         return 0.0
@@ -56,22 +62,34 @@ def check_budget(user_id: int) -> None:
 
 
 def client():
-    import anthropic
-    headers = {}
-    if config.ANTHROPIC_WORKSPACE_ID:
-        headers["anthropic-workspace-id"] = config.ANTHROPIC_WORKSPACE_ID
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, default_headers=headers)
+    return provider().client(config.provider_api_key(), config.ANTHROPIC_WORKSPACE_ID)
 
 
-def usage_of(response) -> dict:
-    """`input_tokens` from the API already excludes what was cached, so the three
-    counts add up rather than overlap. getattr, not attribute access: a response
-    from a model or a stub without caching has neither field."""
-    u = response.usage
-    return {"input_tokens": u.input_tokens,
-            "output_tokens": u.output_tokens,
-            "cache_write_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
-            "cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0}
+def _for(client):
+    """The module that speaks to *this* client. A client may carry its own — that
+    is how the scripted double in tests answers without imitating anyone's wire
+    format — and otherwise it is the configured provider. The pairing matters:
+    a tool result has to go back in the shape of whoever produced the call."""
+    return getattr(client, "provider", None) or provider()
+
+
+def complete(client, **kwargs):
+    """One call, one normalised reply (`providers.Completion`), whoever answered."""
+    return _for(client).complete(client, **kwargs)
+
+
+def tool_results(client, outputs):
+    return _for(client).tool_results(outputs)
+
+
+def file_block(client, data_b64: str, mime: str) -> dict:
+    """An attachment in the shape its provider expects."""
+    return _for(client).file_block(data_b64, mime)
+
+
+def text_block(client, text: str) -> dict:
+    """Text sitting beside an attachment in the same turn."""
+    return _for(client).text_block(text)
 
 
 class Timer:
@@ -85,32 +103,16 @@ class Timer:
 
 def classify_error(exc: BaseException) -> str | None:
     """FR-39: a dead credential is said plainly in the chat, not hidden behind
-    'модель не ответила'. Returns the user-facing sentence, or None when the
-    error is something else (the generic text applies)."""
-    try:
-        import anthropic
-    except ImportError:  # pragma: no cover
-        return None
-    if not isinstance(exc, anthropic.APIStatusError):
-        return None
-    text = str(exc).lower()
-    if exc.status_code == 401:
-        return ("Ключ Anthropic не принимается (401). Проверь sveta_anthropic в Railway — "
-                "до тех пор я не отвечаю на свободный текст.")
-    if exc.status_code == 400 and "credit balance" in text:
-        return ("У аккаунта Anthropic закончился кредит. Пополни в Console → Plans & Billing — "
-                "до тех пор я не отвечаю на свободный текст, но всё сохраняю.")
-    if exc.status_code == 400 and "usage limits" in text:
-        # A spend cap is not an empty balance and not a bad key: the account is
-        # fine, the workspace is simply out of budget until a date the API names.
-        # Without this the cap fell through to "модель не ответила", so Svetochka
-        # looked stupid instead of blocked (live, 2026-09-12).
-        import re
-        m = re.search(r"regain access on (\d{4}-\d{2}-\d{2})", str(exc))
-        until = f" Доступ вернётся {m.group(1)}." if m else ""
-        return ("Упёрлась в лимит расходов воркспейса Anthropic — это не кончившийся счёт "
-                f"и не сломанный ключ, а потолок трат.{until} Подними его в Console → "
-                "Settings → Limits. До тех пор я не отвечаю на свободный текст, но всё сохраняю.")
-    if exc.status_code == 403:
-        return "Ключу Anthropic не хватает прав (403). Проверь workspace ключа в Console."
+    'модель не ответила'. Both providers are asked, not only the configured one —
+    Whisper is OpenAI whoever runs the agent, so an OpenAI failure is possible on
+    an Anthropic deployment and the other way round."""
+    from sveta.core.providers import anthropic_api, openai_api
+    for module in (provider(), anthropic_api, openai_api):
+        try:
+            said = module.classify_error(exc)
+        except Exception:  # noqa: BLE001 — naming an error must not raise one
+            logger.exception("llm: classify_error failed in %s", getattr(module, "NAME", "?"))
+            continue
+        if said:
+            return said
     return None

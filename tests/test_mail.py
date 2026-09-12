@@ -6,6 +6,7 @@ from sveta.core import bot, config, crypto, google
 from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import REGISTRY, run
 from tests.fakedb import install
+from tests.fakellm import FailingClient, scripted
 from tests.test_bot import msg, wire
 
 SECRET_LINE = "PNR ZX9Q7L seat 14A"
@@ -167,27 +168,15 @@ def test_the_planner_unfolds_and_falls_back(monkeypatch):
     fake.add_user("111")
     seen = {}
 
-    class Cheap:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                seen.update(kw)
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text='```json\n'
-                                       '{"queries": ["a", "b"], "key_terms": ["Bogota"]}\n```')],
-                                       usage=SimpleNamespace(input_tokens=200, output_tokens=50))
-    monkeypatch.setattr(mail_tool, "_client", lambda: Cheap())
+    planner = scripted('```json\n{"queries": ["a", "b"], "key_terms": ["Bogota"]}\n```', capture=seen)
+    monkeypatch.setattr(mail_tool, "_client", lambda: planner)
     scope = UserScope(user_id=1, chat_id="111", tz="UTC")
     queries, terms = mail_tool._plan_queries(scope, ToolContext(inbox_item_id=3), "билеты в Колумбию", "в декабре")
     assert queries == ["a", "b"] and terms == ["Bogota"]
     assert seen["model"] == config.CHEAP_MODEL and "срок: в декабре" in seen["messages"][0]["content"]
     assert fake.llm_calls[-1]["purpose"] == "mailquery"
 
-    class Dead:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                raise RuntimeError("down")
-    monkeypatch.setattr(mail_tool, "_client", lambda: Dead())
+    monkeypatch.setattr(mail_tool, "_client", lambda: FailingClient(RuntimeError("down")))
     assert mail_tool._plan_queries(scope, ToolContext(), "билет в Колумбию", "") == (["билет в Колумбию"], ["билет", "Колумбию"])
 
 

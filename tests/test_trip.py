@@ -10,7 +10,7 @@ from sveta.core.scope import ToolContext, UserScope
 from sveta.tools import REGISTRY, run
 from sveta.tools import calendar as calendar_tool
 from tests.fakedb import install
-from tests.fakellm import FakeClient
+from tests.fakellm import FakeClient, scripted
 from tests.test_bot import msg, wire
 
 NOW = datetime(2026, 9, 10, 7, 0, tzinfo=timezone.utc)
@@ -91,14 +91,7 @@ def test_extract_trip_returns_structure_with_verbatim_phrases(monkeypatch):
                                  "body_enc": crypto.encrypt(BODY), "received_at": NOW}])
     seen = {}
 
-    class Haiku:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                seen.update(kw)
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text="```json\n" + json.dumps(EXTRACTED) + "\n```")],
-                                       usage=SimpleNamespace(input_tokens=500, output_tokens=200))
-    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    monkeypatch.setattr(llm, "client", lambda: scripted("```json\n" + json.dumps(EXTRACTED) + "\n```", capture=seen))
     out = run(REGISTRY, "mail_extract_trip", scope(), ToolContext(inbox_item_id=5), {"gmail_id": "m2"})
     assert seen["model"] == config.CHEAP_MODEL and BODY[:40] in seen["messages"][0]["content"]
     assert out.startswith("4 flight(s), PNR 7PVOQO:")
@@ -117,13 +110,7 @@ def test_extract_trip_without_flights_says_so(monkeypatch):
     fake = install(monkeypatch)
     fake.save_mail_messages(1, [{"gmail_id": "m1", "subject": "Receipt", "sender": "x", "body_enc": crypto.encrypt("Paid 500 EUR"), "received_at": NOW}])
 
-    class Haiku:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text='{"pnr": null, "legs": []}')],
-                                       usage=SimpleNamespace(input_tokens=1, output_tokens=1))
-    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    monkeypatch.setattr(llm, "client", lambda: scripted('{"pnr": null, "legs": []}'))
     assert run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "m1"}).startswith("No flights found")
 
 
@@ -175,13 +162,7 @@ def test_garbage_fields_never_reach_the_agent_or_a_reminder(monkeypatch):
         {"flight": "UX999", "from_iata": "TLV", "to_iata": "MAD", "date": "20/09/2026", "depart": "07:40"},
     ]}
 
-    class Haiku:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))],
-                                       usage=SimpleNamespace(input_tokens=1, output_tokens=1))
-    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    monkeypatch.setattr(llm, "client", lambda: scripted(json.dumps(payload)))
     out = run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "m3"})
     assert out.startswith("2 flight(s):")           # the 20/09/2026 leg is dropped and not counted
     assert "PNR" not in out
@@ -196,13 +177,7 @@ def test_unreadable_message_says_so(monkeypatch):
     fake.save_mail_messages(1, [{"gmail_id": "m4", "subject": "T", "sender": "x",
                                  "body_enc": crypto.encrypt("x"), "received_at": NOW}])
 
-    class Haiku:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text='{"legs": [{"date": "вчера"}]}')],
-                                       usage=SimpleNamespace(input_tokens=1, output_tokens=1))
-    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    monkeypatch.setattr(llm, "client", lambda: scripted('{"legs": [{"date": "вчера"}]}'))
     assert run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "m4"}).startswith("No flights could be read")
 
 
@@ -271,13 +246,7 @@ def test_unknown_airport_zone_is_visible_on_the_card(monkeypatch):
                                       "from_city": "Кукуево", "to_city": "Мадрид",
                                       "date": "2026-09-20", "depart": "07:40", "arrive": "11:55"}]}
 
-    class Haiku:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(payload))],
-                                       usage=SimpleNamespace(input_tokens=1, output_tokens=1))
-    monkeypatch.setattr(llm, "client", lambda: Haiku())
+    monkeypatch.setattr(llm, "client", lambda: scripted(json.dumps(payload)))
     out = run(REGISTRY, "mail_extract_trip", scope(), ToolContext(), {"gmail_id": "m5"})
     assert "зона аэропорта неизвестна" in out
     assert 'title="✈️ ZZ100 Кукуево → Мадрид (зона?)"' in out       # the card carries the doubt

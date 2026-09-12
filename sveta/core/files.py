@@ -68,13 +68,9 @@ def _redact(text: str) -> str:
     return text
 
 
-def _content_block(data: bytes, mime: str) -> dict:
-    encoded = base64.standard_b64encode(data).decode()
-    if mime == PDF_MIME:
-        return {"type": "document",
-                "source": {"type": "base64", "media_type": PDF_MIME, "data": encoded}}
-    return {"type": "image",
-            "source": {"type": "base64", "media_type": mime, "data": encoded}}
+def _content_block(client, data: bytes, mime: str) -> dict:
+    """The provider decides what an attachment looks like on the wire."""
+    return llm.file_block(client, base64.standard_b64encode(data).decode(), mime)
 
 
 def describe(user_id: int, file_id: str, *, mime: str, filename: str = "",
@@ -92,16 +88,16 @@ def describe(user_id: int, file_id: str, *, mime: str, filename: str = "",
         llm.check_budget(user_id)
         client = _client()
         with llm.Timer() as t:
-            response = client.messages.create(
-                model=config.CHEAP_MODEL, max_tokens=1500, system=_SYSTEM,
+            answer = llm.complete(
+                client, model=config.VISION_MODEL, max_tokens=1500,
+                system=[{"type": "text", "text": _SYSTEM}],
                 messages=[{"role": "user", "content": [
-                    _content_block(data, mime),
-                    {"type": "text", "text": f"Файл: {filename or 'без имени'}. Опиши и выпиши текст."},
+                    _content_block(client, data, mime),
+                    llm.text_block(client, f"Файл: {filename or 'без имени'}. Опиши и выпиши текст."),
                 ]}])
-        usage = llm.usage_of(response)
-        db.record_llm_call(user_id, inbox_item_id, "vision", config.CHEAP_MODEL, usage,
-                           llm.price(config.CHEAP_MODEL, usage), t.ms)
-        return "\n".join(b.text for b in response.content if b.type == "text").strip()[:MAX_EXTRACT_CHARS]
+        db.record_llm_call(user_id, inbox_item_id, "vision", config.VISION_MODEL, answer.usage,
+                           llm.price(config.VISION_MODEL, answer.usage), t.ms)
+        return answer.text[:MAX_EXTRACT_CHARS]
     except llm.BudgetExceeded:
         raise
     except Exception as e:  # noqa: BLE001 — the type only: a file's contents are never logged

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from sveta.core import bot, telegram
 from sveta.jobs import brief, digest
 from tests.fakedb import install
-from tests.fakellm import FakeClient
+from tests.fakellm import FailingClient, FakeClient
 from tests.test_bot import Sent
 
 TZ = "Asia/Jerusalem"
@@ -147,12 +147,8 @@ def test_model_may_only_rephrase_within_ten_lines(monkeypatch):
 def test_model_failure_falls_back_and_names_a_dead_credential(monkeypatch):
     fake, _ = setup(monkeypatch)
 
-    class Dead:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                raise api_error(400, "Your credit balance is too low to access the Anthropic API.")
-    text, model, cost, alert = brief.compose("brief", {"today": ["11:00 банк"]}, {}, 1, client=Dead())
+    dead = FailingClient(api_error(400, "Your credit balance is too low to access the Anthropic API."))
+    text, model, cost, alert = brief.compose("brief", {"today": ["11:00 банк"]}, {}, 1, client=dead)
     assert model is None and text.startswith("Доброе утро") and "кредит" in alert
 
 

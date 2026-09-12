@@ -3,22 +3,23 @@ import pytest
 
 
 def test_client_sends_workspace_header_only_when_configured(monkeypatch):
+    """An identity-linked Anthropic key needs the workspace id on every request; a
+    workspace-scoped one must not be sent one."""
     import sys, types
     captured = {}
 
     class FakeAnthropic:
         def __init__(self, **kwargs):
+            captured.clear()
             captured.update(kwargs)
 
     monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=FakeAnthropic))
-    from sveta.core import config, llm
+    from sveta.core.providers import anthropic_api
 
-    monkeypatch.setattr(config, "ANTHROPIC_WORKSPACE_ID", "")
-    llm.client()
-    assert captured["default_headers"] == {}
+    anthropic_api.client("k", "")
+    assert "default_headers" not in captured
 
-    monkeypatch.setattr(config, "ANTHROPIC_WORKSPACE_ID", "wrkspc_123")
-    llm.client()
+    anthropic_api.client("k", "wrkspc_123")
     assert captured["default_headers"] == {"anthropic-workspace-id": "wrkspc_123"}
 
 
@@ -60,15 +61,31 @@ def test_cached_tokens_are_priced_at_their_own_rates():
 
 def test_usage_survives_a_response_that_never_heard_of_caching():
     from types import SimpleNamespace
-    from sveta.core import llm
+    from sveta.core.providers import anthropic_api
     old = SimpleNamespace(usage=SimpleNamespace(input_tokens=100, output_tokens=20))
-    assert llm.usage_of(old) == {"input_tokens": 100, "output_tokens": 20,
-                                 "cache_write_tokens": 0, "cache_read_tokens": 0}
+    assert anthropic_api._usage(old) == {"input_tokens": 100, "output_tokens": 20,
+                                         "cache_write_tokens": 0, "cache_read_tokens": 0}
     new = SimpleNamespace(usage=SimpleNamespace(input_tokens=100, output_tokens=20,
                                                 cache_creation_input_tokens=5000,
                                                 cache_read_input_tokens=None))
-    assert llm.usage_of(new)["cache_write_tokens"] == 5000
-    assert llm.usage_of(new)["cache_read_tokens"] == 0
+    assert anthropic_api._usage(new)["cache_write_tokens"] == 5000
+    assert anthropic_api._usage(new)["cache_read_tokens"] == 0
+
+
+def test_openai_cached_tokens_are_not_counted_twice():
+    """OpenAI reports cached tokens INSIDE input_tokens; Anthropic reports them
+    beside it. Without the subtraction the cached prefix is billed at full price
+    and at the cache rate, on every single call."""
+    from types import SimpleNamespace
+    from sveta.core.providers import openai_api
+    response = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=5600, output_tokens=250,
+        input_tokens_details=SimpleNamespace(cached_tokens=5000, cache_write_tokens=0)))
+    assert openai_api._usage(response) == {"input_tokens": 600, "output_tokens": 250,
+                                           "cache_write_tokens": 0, "cache_read_tokens": 5000}
+    bare = SimpleNamespace(usage=SimpleNamespace(input_tokens=79, output_tokens=81,
+                                                 input_tokens_details=None))
+    assert openai_api._usage(bare)["input_tokens"] == 79
 
 
 def test_a_spend_cap_is_named_as_a_spend_cap():

@@ -88,7 +88,10 @@ def test_the_golden_world_answers_the_tools(monkeypatch):
 # Errors that make every remaining scenario meaningless: the run stops on these
 # rather than reporting 60 identical failures or losing what it already paid for.
 TERMINAL = ("usage limits", "credit balance", "invalid x-api-key", "authentication_error",
-            "permission_error", "not_found_error")
+            "permission_error", "not_found_error",
+            # OpenAI's wording for the same three things
+            "incorrect api key", "invalid_api_key", "exceeded your current quota",
+            "insufficient_quota", "model_not_found")
 
 
 def _is_terminal(e: Exception) -> bool:
@@ -161,15 +164,19 @@ def test_golden_set(monkeypatch):
             if _is_terminal(e):
                 stopped = f"{type(e).__name__}: {str(e)[:200]}"
                 break
-            failures.append((s["message"], [f"raised {type(e).__name__}: {str(e)[:120]}"], []))
+            failures.append((s["message"], [f"raised {type(e).__name__}: {str(e)[:120]}"], ""))
             ran += 1
             continue
         ran += 1
         misses = _check(s, r.tool_calls, r.reply)
         if misses:
-            failures.append((s["message"], misses, [n for n, _ in r.tool_calls]))
+            # The reply itself, not only the verdict: a miss on wording cannot be
+            # judged without seeing what she actually said, and re-running to find
+            # out costs real money (2026-09-12).
+            failures.append((s["message"], misses,
+                             f"{[n for n, _ in r.tool_calls]} said: {r.reply[:400]!r}"))
         print(f"{'x' if misses else '.'}", end="", flush=True)
-    report = "\n".join(f"- {m!r}: {why} (called {called})" for m, why, called in failures)
+    report = "\n".join(f"- {m!r}\n    {why}\n    {called}" for m, why, called in failures)
     if stopped:
         print(f"\nGolden stopped after {ran}/{len(scenarios)} scenarios: {stopped}\n{report}")
         pytest.fail(f"the credential gave out after {ran}/{len(scenarios)} scenarios — "
@@ -203,3 +210,13 @@ def test_the_smoke_set_covers_every_class_of_failure_we_have_seen():
     assert any(s.get("forbid_reply") for s in SMOKE)        # the wrong-hit class
     assert any(s.get("expect_reply") for s in SMOKE)        # the did-it-find-it class
     assert any(s.get("forbid_tool_prefix") for s in SMOKE)  # prompt injection
+
+
+def test_a_bad_openai_key_stops_the_run_too():
+    """The first OpenAI run burned every scenario against a 401 because TERMINAL
+    only knew Anthropic's wording (2026-09-12)."""
+    assert _is_terminal(Exception(
+        'Error code: 401 - {\'error\': {\'message\': \'Incorrect API key provided: sk-proj***\', '
+        '\'code\': \'invalid_api_key\'}}'))
+    assert _is_terminal(Exception("429 - You exceeded your current quota"))
+    assert not _is_terminal(Exception("429 - Rate limit reached, please retry"))

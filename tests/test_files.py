@@ -32,16 +32,21 @@ def document(update_id=1, name="ticket.pdf", mime="application/pdf", size=30_000
 
 
 def vision(monkeypatch, text=RECEIPT, capture=None):
-    class Cheap:
-        class messages:
-            @staticmethod
-            def create(**kw):
-                if capture is not None:
-                    capture.update(kw)
-                return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)],
-                                       usage=SimpleNamespace(input_tokens=800, output_tokens=60))
-    monkeypatch.setattr(files, "_client", lambda: Cheap())
+    """The cheap model, scripted. It carries its own provider like every double in
+    these tests, so the assertions are about what the pipeline sent, not about any
+    one house's wire format (those are checked in tests/test_providers.py)."""
+    from tests.fakellm import FakeClient
+    cheap = FakeClient([text])
+    if capture is not None:
+        original = cheap.messages.next_reply
+
+        def watched(kw):
+            capture.update(kw)
+            return original(kw)
+        cheap.messages.next_reply = watched
+    monkeypatch.setattr(files, "_client", lambda: cheap)
     monkeypatch.setattr(files, "_download", lambda file_id: (b"\xff\xd8jpegbytes", "photos/1.jpg"))
+    return cheap
 
 
 def test_kind_of_reads_photos_and_documents():
@@ -62,9 +67,10 @@ def test_photo_without_a_caption_is_read_and_filed(monkeypatch):
     bot.handle_update(photo())
     item = list(fake.inbox.values())[0]
     assert item["kind"] == "photo" and item["file_id"] == "big" and item["transcript"] == RECEIPT
-    assert seen["model"] == config.CHEAP_MODEL
+    assert seen["model"] == config.VISION_MODEL      # never the agent model
+    assert config.VISION_MODEL != config.AGENT_MODEL
     block = seen["messages"][0]["content"][0]
-    assert block["type"] == "image" and block["source"]["media_type"] == "image/jpeg"
+    assert block["type"] == "file" and block["media_type"] == "image/jpeg"
     turn = client.messages.requests[0]["messages"][0]["content"]
     assert "[фото «photo.jpg»]" in turn and "<<<файл" in turn and RECEIPT in turn
     assert sent.messages[0][1] == "Смотрю файл…"
@@ -80,14 +86,14 @@ def test_photo_with_a_caption_keeps_both(monkeypatch):
     assert turn.startswith("вот чек из аптеки, для налоговой") and RECEIPT in turn
 
 
-def test_pdf_goes_as_a_document_block(monkeypatch):
+def test_pdf_goes_to_the_model_as_a_file_not_as_text(monkeypatch):
     fake, sent, client = wire(monkeypatch, [[("note_save", {"body": "билет", "project": "", "url": ""})], "Ок."])
     seen = {}
     vision(monkeypatch, text="Boarding pass LY315 20.09", capture=seen)
     bot.handle_update(document())
     block = seen["messages"][0]["content"][0]
-    assert block["type"] == "document" and block["source"]["media_type"] == "application/pdf"
-    assert base64.standard_b64decode(block["source"]["data"]) == b"\xff\xd8jpegbytes"
+    assert block["type"] == "file" and block["media_type"] == "application/pdf"
+    assert base64.standard_b64decode(block["data"]) == b"\xff\xd8jpegbytes"
 
 
 def test_a_plain_text_file_is_read_without_the_model(monkeypatch):

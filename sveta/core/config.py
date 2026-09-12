@@ -78,10 +78,30 @@ NOTION_CLIENT_ID = _env("NOTION_CLIENT_ID")         # preferred: a public integr
 NOTION_CLIENT_SECRET = _env("NOTION_CLIENT_SECRET")
 PUBLIC_DOMAIN = _env("RAILWAY_PUBLIC_DOMAIN", "SVETA_PUBLIC_DOMAIN")
 
+# Which model house answers (SPEC §7.1). The tools, playbooks and agent loop are
+# provider-neutral; only sveta/core/providers/<name>.py is not. Switching is this
+# variable, and the golden set can be run against both to compare on our own
+# scenarios rather than on benchmarks.
+PROVIDER = _env("SVETA_PROVIDER", default="openai").lower()
+
+
+def _model(role: str, env_name: str) -> str:
+    """The model for one role: the environment wins, otherwise the provider's own
+    default. Roles, not tiers, because the cheap ones differ by job — reading an
+    attachment is not the same work as planning a Gmail query."""
+    from sveta.core.providers import get
+    chosen = _env(env_name)
+    return chosen or get(PROVIDER).DEFAULT_MODELS[role]
+
+
 # IDs without date suffixes (SPEC.md §6.1). effort is sent to the agent model only.
-AGENT_MODEL = _env("SVETA_AGENT_MODEL", default="claude-sonnet-5")
-CHEAP_MODEL = _env("SVETA_CHEAP_MODEL", default="claude-haiku-4-5")
-BRIEF_MODEL = _env("SVETA_BRIEF_MODEL", default=AGENT_MODEL)
+AGENT_MODEL = _model("agent", "SVETA_AGENT_MODEL")
+CHEAP_MODEL = _model("cheap", "SVETA_CHEAP_MODEL")
+# Attachments are read by the cheapest model that actually reads them: a ticket
+# PDF came back complete from the cheap tier of both providers (tested
+# 2026-09-12), and this is the highest-volume paid call Svetochka makes.
+VISION_MODEL = _model("vision", "SVETA_VISION_MODEL")
+BRIEF_MODEL = _model("brief", "SVETA_BRIEF_MODEL")
 TRANSCRIBE_MODEL = _env("SVETA_TRANSCRIBE_MODEL", default="whisper-1")
 
 # Per-user daily ceiling, checked against llm_call before each paid call (FR-38).
@@ -103,28 +123,42 @@ TICK_SECONDS = int(_env("SVETA_TICK_SECONDS", default="20"))
 
 # (canonical name, accepted aliases). What the deployed stages need: the OpenAI
 # key since stage 2 (voice); Google and Notion arrive with stages 3 and 5.
+# The key for whichever provider actually answers. The other one is optional: a
+# deployment on OpenAI must not fail startup over a missing Anthropic key.
+AGENT_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_API_KEY", "sveta_anthropic"),
+    "openai": ("OPENAI_API_KEY", "sveta_openai_api"),
+}
+
+
+def provider_api_key() -> str:
+    return _env(*AGENT_KEY_NAMES.get(PROVIDER, AGENT_KEY_NAMES["openai"]))
+
+
+_AGENT_KEY = AGENT_KEY_NAMES.get(PROVIDER, AGENT_KEY_NAMES["openai"])
+
 REQUIRED: tuple[tuple[str, ...], ...] = (
     ("SVETA_TELEGRAM_TOKEN", "sveta_telegram_token"),
     ("SVETA_ALLOWED_CHAT_IDS",),
     ("SVETA_WEBHOOK_SECRET",),
     ("SVETA_TOKEN_KEY",),
     ("DATABASE_URL",),
-    ("ANTHROPIC_API_KEY", "sveta_anthropic"),
-    ("OPENAI_API_KEY", "sveta_openai_api"),
+    _AGENT_KEY,
+    ("OPENAI_API_KEY", "sveta_openai_api"),      # Whisper, whoever runs the agent
 )
 
 
 # The cron roles need less: no webhook, no seed list, no Whisper.
 REQUIRED_BY_ROLE: dict[str, tuple[tuple[str, ...], ...]] = {
     "web": REQUIRED,
-    "digest": (("DATABASE_URL",), ("SVETA_TELEGRAM_TOKEN", "sveta_telegram_token"),
-               ("ANTHROPIC_API_KEY", "sveta_anthropic")),
+    "digest": (("DATABASE_URL",), ("SVETA_TELEGRAM_TOKEN", "sveta_telegram_token"), _AGENT_KEY),
     "ingest": (("DATABASE_URL",),),
 }
 
 
 def validate_secrets(role: str = "web") -> None:
     """Fail fast, and say exactly which variable is missing by its canonical name."""
-    missing = [names[0] for names in REQUIRED_BY_ROLE.get(role, REQUIRED) if not _env(*names)]
+    wanted = dict.fromkeys(REQUIRED_BY_ROLE.get(role, REQUIRED))   # the same key twice is one
+    missing = [names[0] for names in wanted if not _env(*names)]
     if missing:
         raise EnvironmentError(f"Missing required env vars: {', '.join(missing)}")
